@@ -13,7 +13,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
 
     <!-- LibTiff WebAssembly Loader (tiff.js) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tiff.js/1.0.0/tiff.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/seikichi/tiff.js/tiff.min.js"></script>
 
     <!-- Monaco Editor Loader -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
@@ -960,7 +960,12 @@ print("=== Run Successful ===")
                         bytes[i] = binaryString.charCodeAt(i);
                     }
 
-                    // Tiff.js decodes the buffer into a canvas
+                    // Initialize Tiff library if needed
+                    if (typeof Tiff !== 'undefined' && typeof Tiff.initialize === 'function') {
+                        try {
+                            Tiff.initialize({ TOTAL_MEMORY: 16777216 });
+                        } catch(e) {}
+                    }
                     const tiff = new Tiff({ buffer: bytes.buffer });
                     const $canvas = tiff.toCanvas();
                     
