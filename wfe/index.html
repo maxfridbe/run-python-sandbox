@@ -481,6 +481,21 @@
             transform: scale(1.1);
         }
 
+        .btn-remove {
+            color: var(--accent-red);
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0.25rem;
+            font-size: 0.875rem;
+            transition: var(--transition);
+        }
+
+        .btn-remove:hover {
+            color: var(--text-primary);
+            transform: scale(1.1);
+        }
+
         .preview-pane {
             border: 1px solid var(--border);
             background-color: var(--bg-input);
@@ -723,6 +738,20 @@
                     </div>
                 </div>
 
+                <!-- Input Files Section -->
+                <div class="files-box">
+                    <div class="console-title" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>Input Files (/input)</span>
+                        <label for="input-file-upload" class="server-btn" style="cursor: pointer; padding: 0.2rem 0.6rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem;">
+                            📤 Upload File
+                        </label>
+                        <input type="file" id="input-file-upload" multiple style="display: none;" />
+                    </div>
+                    <div id="input-file-list" class="file-list">
+                        <div class="placeholder-text" style="grid-column: 1/-1;">No files uploaded yet. Files will be mounted in `/input/`.</div>
+                    </div>
+                </div>
+
                 <!-- Generated Files Section -->
                 <div class="files-box">
                     <div class="console-title">Generated Files (/output)</div>
@@ -754,6 +783,14 @@ from reportlab.lib.utils import ImageReader
 
 print("=== Starting PDF and Image Generation ===")
 print(f"UID={os.getuid()}, GID={os.getgid()}")
+
+# Check for input files in /input/
+print("Checking for input files...")
+if os.path.exists("/input"):
+    input_files = os.listdir("/input")
+    print(f"Files in /input/: {input_files}")
+else:
+    print("/input/ directory not found or not mounted")
 
 # Ensure output directory exists
 os.makedirs("/output", exist_ok=True)
@@ -836,8 +873,8 @@ except Exception as e:
 print("=== Run Successful ===")
 `;
 
-        let editor;
         let generatedFiles = {}; // Maps filename -> base64 content
+        let uploadedInputFiles = {}; // Maps filename -> base64 content
         let targetServerOrigin = window.location.origin;
         let sandboxLibs = ['PIL', 'reportlab', 'pypdf', 'os', 'sys', 'json', 'math', 'urllib', 'time'];
 
@@ -1070,6 +1107,56 @@ print("=== Run Successful ===")
         const $fileList = document.getElementById('file-list');
         const $previewPane = document.getElementById('preview-pane');
         const $statusBadge = document.getElementById('status-badge');
+        const $inputFileUpload = document.getElementById('input-file-upload');
+        const $inputFileList = document.getElementById('input-file-list');
+
+        function renderInputFiles() {
+            const filenames = Object.keys(uploadedInputFiles);
+            if (filenames.length === 0) {
+                $inputFileList.innerHTML = '<div class="placeholder-text" style="grid-column: 1/-1;">No files uploaded yet. Files will be mounted in `/input/`.</div>';
+                return;
+            }
+
+            $inputFileList.innerHTML = '';
+            filenames.forEach(name => {
+                const $card = document.createElement('div');
+                $card.className = 'file-card';
+                $card.innerHTML = `
+                    <div class="file-info">
+                        <span class="file-icon">📄</span>
+                        <span class="file-name" title="${name}">${name}</span>
+                    </div>
+                    <button class="btn-remove" title="Remove file">❌</button>
+                `;
+
+                $card.querySelector('.btn-remove').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    delete uploadedInputFiles[name];
+                    renderInputFiles();
+                });
+
+                $inputFileList.appendChild($card);
+            });
+        }
+
+        if ($inputFileUpload) {
+            $inputFileUpload.addEventListener('change', (e) => {
+                const files = e.target.files;
+                if (!files || files.length === 0) return;
+
+                Array.from(files).forEach(file => {
+                    const reader = new FileReader();
+                    reader.onload = function(evt) {
+                        const dataUrl = evt.target.result;
+                        const base64Data = dataUrl.split(',')[1];
+                        uploadedInputFiles[file.name] = base64Data;
+                        renderInputFiles();
+                    };
+                    reader.readAsDataURL(file);
+                });
+                $inputFileUpload.value = '';
+            });
+        }
 
         // Run Code Trigger
         $btnRun.addEventListener('click', async () => {
@@ -1091,7 +1178,8 @@ print("=== Run Successful ===")
                 code: editor.getValue(),
                 network: 'offline', // Locked to offline for compliance
                 cpus: parseFloat($cpuSelect.value),
-                memory_mb: parseInt($memorySelect.value)
+                memory_mb: parseInt($memorySelect.value),
+                input_files: uploadedInputFiles
             };
 
             try {
