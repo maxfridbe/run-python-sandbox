@@ -1,6 +1,6 @@
 # Binaries & Build Outputs
-host/server_go/server_go_bin
-host/server_rust/target/
+server/server_go/server_go_bin
+server/server_rust/target/
 
 # Test outputs
 host/test_out_*
@@ -15,5 +15,5 @@ test_out_*
 .DS_Store
 
 # .NET Build Outputs
-host/server_dotnet/bin/
-host/server_dotnet/obj/
+server/server_dotnet/bin/
+server/server_dotnet/obj/

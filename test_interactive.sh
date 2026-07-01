@@ -15,7 +15,7 @@ MODE=${1:-"auto"}
 # Start Go
 run_go() {
     echo "[*] Compiling and starting Go controller..."
-    cd server_go
+    cd server/server_go
     go build -o server_go_bin main.go
     echo ""
     echo "=========================================================="
@@ -30,7 +30,7 @@ run_go() {
 # Start Rust
 run_rust() {
     echo "[*] Starting Rust controller (compiling if needed)..."
-    cd server_rust
+    cd server/server_rust
     echo ""
     echo "=========================================================="
     echo " -> Rust Service started successfully!"
@@ -44,7 +44,7 @@ run_rust() {
 # Start .NET
 run_dotnet() {
     echo "[*] Starting .NET controller (compiling if needed)..."
-    cd server_dotnet
+    cd server/server_dotnet
     echo ""
     echo "=========================================================="
     echo " -> .NET Service started successfully!"

@@ -14,7 +14,7 @@ rm -rf ./test_out_isolation ./test_out_net_offline ./test_out_net_isolated ./tes
 # 1. Run Isolation Test
 echo ""
 echo "[test.sh] 1. Running process & user isolation test..."
-python3 worker.py --run_py ./tests/test_isolation.py --output_dir ./test_out_isolation --network offline
+python3 host/worker.py --run_py host/tests/test_isolation.py --output_dir ./test_out_isolation --network offline
 
 # Check if the output file was successfully sucked up
 if [ -f "./test_out_isolation/test_result.txt" ]; then
@@ -30,7 +30,7 @@ echo "--------------------------------------------------"
 echo ""
 echo "[test.sh] 2. Running offline network egress test..."
 # Run and capture output
-output_net_offline=$(python3 worker.py --run_py ./tests/test_network.py --output_dir ./test_out_net_offline --network offline 2>&1)
+output_net_offline=$(python3 host/worker.py --run_py host/tests/test_network.py --output_dir ./test_out_net_offline --network offline 2>&1)
 echo "$output_net_offline"
 
 # For offline mode, loopback, private, metadata, and internet should ALL be False (or connection fail)
@@ -48,7 +48,7 @@ echo "--------------------------------------------------"
 echo ""
 echo "[test.sh] 3. Running isolated network egress test..."
 # Run and capture output
-output_net_isolated=$(python3 worker.py --run_py ./tests/test_network.py --output_dir ./test_out_net_isolated --network isolated 2>&1)
+output_net_isolated=$(python3 host/worker.py --run_py host/tests/test_network.py --output_dir ./test_out_net_isolated --network isolated 2>&1)
 echo "$output_net_isolated"
 
 # For isolated mode, loopback, private, and metadata should be False (blocked)
@@ -65,7 +65,7 @@ echo "--------------------------------------------------"
 # 4. Run Nested Podman Test
 echo ""
 echo "[test.sh] 4. Running nested rootless Podman execution test..."
-python3 worker.py --run_py ./tests/test_nested_podman.py --output_dir ./test_out_nested --network isolated
+python3 host/worker.py --run_py host/tests/test_nested_podman.py --output_dir ./test_out_nested --network isolated
 
 # Check if nested container ran successfully
 if [ -f "./test_out_nested/nested_podman_success.txt" ]; then
