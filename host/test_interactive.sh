@@ -7,6 +7,9 @@ echo "=========================================================="
 echo "      run-python-sandbox Interactive Dashboard Service"
 echo "=========================================================="
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 MODE=${1:-"auto"}
 
 # Start Go

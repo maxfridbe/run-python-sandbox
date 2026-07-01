@@ -242,7 +242,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	paths := []string{"index.html", "../index.html", "server_go/index.html"}
+	paths := []string{"wfe/index.html", "../wfe/index.html", "../../wfe/index.html", "index.html"}
 	var content []byte
 	var err error
 	for _, p := range paths {
@@ -305,7 +305,7 @@ func handleLibraries(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleTiff(w http.ResponseWriter, r *http.Request) {
-	paths := []string{"tiff.min.js", "../tiff.min.js", "server_go/tiff.min.js"}
+	paths := []string{"wfe/tiff.min.js", "../wfe/tiff.min.js", "../../wfe/tiff.min.js", "tiff.min.js"}
 	var content []byte
 	var err error
 	for _, p := range paths {

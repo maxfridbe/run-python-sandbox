@@ -160,7 +160,7 @@ async fn handle_libraries() -> Result<Json<Vec<String>>, StatusCode> {
 /// # Errors
 /// Returns an internal server error status code if index.html cannot be located.
 async fn handle_index() -> Result<Html<String>, StatusCode> {
-    let paths = ["index.html", "../index.html", "server_rust/index.html"];
+    let paths = ["wfe/index.html", "../wfe/index.html", "../../wfe/index.html", "index.html"];
     for p in &paths {
         if let Ok(content) = fs::read_to_string(p).await {
             return Ok(Html(content));
@@ -172,7 +172,7 @@ async fn handle_index() -> Result<Html<String>, StatusCode> {
 
 /// HTTP handler that serves the local tiff.min.js script.
 async fn handle_tiff() -> Result<(axum::http::HeaderMap, String), StatusCode> {
-    let paths = ["tiff.min.js", "../tiff.min.js", "server_rust/tiff.min.js"];
+    let paths = ["wfe/tiff.min.js", "../wfe/tiff.min.js", "../../wfe/tiff.min.js", "tiff.min.js"];
     for p in &paths {
         if let Ok(content) = fs::read_to_string(p).await {
             let mut headers = axum::http::HeaderMap::new();

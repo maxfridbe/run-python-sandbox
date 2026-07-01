@@ -21,7 +21,7 @@ app.Urls.Add($"http://0.0.0.0:{port}");
 // 1. GET / - Serve index.html
 app.MapGet("/", async (HttpContext context) =>
 {
-    string[] searchPaths = { "index.html", "../index.html", "server_dotnet/index.html" };
+    string[] searchPaths = { "wfe/index.html", "../wfe/index.html", "../../wfe/index.html", "index.html" };
     foreach (var path in searchPaths)
     {
         if (File.Exists(path))
@@ -38,7 +38,7 @@ app.MapGet("/", async (HttpContext context) =>
 // 2. GET /tiff.min.js - Serve tiff.min.js
 app.MapGet("/tiff.min.js", async (HttpContext context) =>
 {
-    string[] searchPaths = { "tiff.min.js", "../tiff.min.js", "server_dotnet/tiff.min.js" };
+    string[] searchPaths = { "wfe/tiff.min.js", "../wfe/tiff.min.js", "../../wfe/tiff.min.js", "tiff.min.js" };
     foreach (var path in searchPaths)
     {
         if (File.Exists(path))

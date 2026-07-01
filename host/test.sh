@@ -5,6 +5,9 @@ set -e
 
 echo "=== Starting run-python-sandbox Test Suite ==="
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 # Clean up any old test outputs
 rm -rf ./test_out_isolation ./test_out_net_offline ./test_out_net_isolated ./test_out_nested
 

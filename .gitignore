@@ -1,12 +1,13 @@
 # Binaries & Build Outputs
-server_go/server_go_bin
-server_rust/target/
+host/server_go/server_go_bin
+host/server_rust/target/
 
 # Test outputs
+host/test_out_*
 test_out_*
 
 # Byte-compiled / Python cache
-__pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 
@@ -14,5 +15,5 @@ __pycache__/
 .DS_Store
 
 # .NET Build Outputs
-server_dotnet/bin/
-server_dotnet/obj/
+host/server_dotnet/bin/
+host/server_dotnet/obj/
