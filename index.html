@@ -12,6 +12,9 @@
     <!-- PDF.js Loader -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
 
+    <!-- LibTiff WebAssembly Loader (tiff.js) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tiff.js/1.0.0/tiff.min.js"></script>
+
     <!-- Monaco Editor Loader -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
 
@@ -622,6 +625,34 @@ c.drawRightString(width - 50, 50, "Verified execution. Metrics: OK.")
 
 c.save()
 print(f"ReportLab PDF saved successfully to {pdf_path}")
+
+# 3. Generate a high-fidelity TIFF preview of the report (using PIL)
+print("Generating TIFF file preview...")
+tiff_path = "/output/report_preview.tiff"
+tiff_img = Image.new("RGB", (600, 750), color="#0a0b10")
+tiff_draw = ImageDraw.Draw(tiff_img)
+
+# Replicate PDF report visual styles on the TIFF canvas
+tiff_draw.rectangle([15, 15, 585, 735], outline="#00f2fe", width=2)
+tiff_draw.text((40, 40), "run-python-sandbox Execution Report Preview", fill="#00f2fe")
+tiff_draw.text((40, 65), "This TIFF preview was generated concurrently with the PDF.", fill="#9ca3af")
+
+# Embed the generated pillow pattern image inside the TIFF file
+try:
+    embedded = Image.open(pil_image_path)
+    # Resize slightly to fit beautifully
+    embedded = embedded.resize((450, 225))
+    tiff_img.paste(embedded, (75, 120))
+except Exception as e:
+    tiff_draw.text((75, 120), f"Error loading embedded PIL image: {e}", fill="#ef4444")
+
+tiff_draw.ellipse([250, 420, 350, 520], outline="#9b51e0", width=4)
+tiff_draw.text((40, 680), "Double-sandboxed environment. Network egress: offline. Storage layer: VFS.", fill="#9ca3af")
+
+# Save in TIFF format
+tiff_img.save(tiff_path, format="TIFF")
+print(f"TIFF preview saved successfully to {tiff_path}")
+
 print("=== Run Successful ===")
 `;
 
@@ -847,7 +878,8 @@ print("=== Run Successful ===")
             filenames.forEach(name => {
                 const isImage = /\.(png|jpe?g|gif|svg|webp)$/i.test(name);
                 const isPdf = /\.pdf$/i.test(name);
-                const icon = isImage ? '🖼️' : (isPdf ? '📕' : '📄');
+                const isTiff = /\.(tiff?)$/i.test(name);
+                const icon = isImage ? '🖼️' : (isPdf ? '📕' : (isTiff ? '📷' : '📄'));
 
                 const $card = document.createElement('div');
                 $card.className = 'file-card';
@@ -885,6 +917,7 @@ print("=== Run Successful ===")
             const isSvg = /\.svg$/i.test(name);
             const isPngJpg = /\.(png|jpe?g|gif|webp)$/i.test(name);
             const isPdf = /\.pdf$/i.test(name);
+            const isTiff = /\.(tiff?)$/i.test(name);
             const isText = /\.(txt|html|json|py|sh|log|md|csv)$/i.test(name);
 
             $previewPane.innerHTML = `
@@ -915,6 +948,33 @@ print("=== Run Successful ===")
                 $img.src = `data:image/${ext};base64,${base64Content}`;
                 $img.className = 'preview-img';
                 $previewBody.appendChild($img);
+            } else if (isTiff) {
+                // Render TIFF using tiff.js WebAssembly
+                try {
+                    $previewBody.innerHTML = '<div class="placeholder-text">Decoding TIFF using LibTiff WebAssembly...</div>';
+                    
+                    const binaryString = atob(base64Content);
+                    const len = binaryString.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+
+                    // Tiff.js decodes the buffer into a canvas
+                    const tiff = new Tiff({ buffer: bytes.buffer });
+                    const $canvas = tiff.toCanvas();
+                    
+                    $canvas.style.display = 'block';
+                    $canvas.style.margin = '1rem auto';
+                    $canvas.style.maxWidth = '100%';
+                    $canvas.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.4)';
+                    $canvas.style.borderRadius = '4px';
+
+                    $previewBody.innerHTML = '';
+                    $previewBody.appendChild($canvas);
+                } catch (err) {
+                    $previewBody.innerHTML = `<div class="placeholder-text" style="color: var(--glow-purple);">Error rendering TIFF with WebAssembly: ${err.message}</div>`;
+                }
             } else if (isPdf) {
                 // Render PDF using PDF.js
                 try {
