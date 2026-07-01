@@ -461,7 +461,7 @@
             </h3>
             <p style="font-size: 0.775rem; color: var(--text-secondary); line-height: 1.45; margin: 0;">
                 This dashboard executes arbitrary Python 3 code inside a namespace-isolated rootless container. 
-                <strong>Pre-installed libraries:</strong> <code>PIL</code> (Pillow), <code>reportlab</code> (PDF generator), <code>pypdf</code>.
+                <strong>Pre-installed libraries/utilities:</strong> <code>PIL</code> (Pillow), <code>reportlab</code> (PDF generator), <code>pypdf</code>, and <code>poppler-utils</code> (includes <code>pdftoppm</code> for PDF-to-TIFF rendering).
                 <strong>Storage:</strong> Files written to <code>/output</code> inside your Python script are retrieved as base64 and previewed. 
                 <strong>Network Egress:</strong> Locked to <code>offline</code> (strictly blocked for security compliance).
             </p>

@@ -1,6 +1,6 @@
 # run-python-sandbox
 
-A secure, rootless Podman-in-Podman container designed to execute untrusted Python code and run "offensive" nested Podman containers safely. It implements the **Unix UID-in-container** security model to provide double-sandboxing, process-level isolation, and configurable resource allocation limits.
+A secure, rootless Podman-in-Podman container designed to execute untrusted Python code and run "offensive" nested Podman containers safely. It implements the **Unix UID-in-container** security model to provide double-sandboxing, process-level isolation, and configurable resource allocation limits. Pre-installed tools inside the container include `reportlab` (PDF generation), `Pillow` (image editing), `pypdf`, and `poppler-utils` (`pdftoppm` CLI utility for high-fidelity PDF-to-TIFF page rendering).
 
 ---
 
@@ -11,7 +11,7 @@ A secure, rootless Podman-in-Podman container designed to execute untrusted Pyth
 * **Safe Nested Podman**: Spawns nested rootless containers inside the sandbox using Podman's VFS storage driver.
 * **Locked Egress Control**: Hardcoded network-disabled (`offline`) policies on API workers and UI for ultimate security compliance.
 * **Hardware-Independent Performance Metrics**: Captures scheduler context switches and filesystem I/O metrics for node-independent codebase comparisons.
-* **Interactive Monaco Web UI**: Pastable Python editor with dynamic module autocomplete, live output previews (images, text, and PDF rendering via PDF.js), and configurable CPU and RAM limit controls.
+* **Interactive Monaco Web UI**: Pastable Python editor with dynamic module autocomplete, live output previews (images, text, PDF rendering via PDF.js, and TIFF rendering via LibTiff WebAssembly), and configurable CPU and RAM limit controls.
 
 ---
 
