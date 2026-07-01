@@ -7,6 +7,11 @@ FROM debian:bookworm-slim
 # - python3: Python interpreter for the sandbox
 # - uidmap: For newuidmap/newgidmap (nested rootless podman namespaces)
 # - ca-certificates: Secure SSL connections if net access is enabled
+RUN sed -i 's/[Cc]omponents: main/Components: main contrib non-free/g' /etc/apt/sources.list.d/debian.sources || \
+    sed -i 's/main/main contrib non-free/g' /etc/apt/sources.list
+
+RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     podman \
     slirp4netns \
@@ -20,6 +25,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pil \
     python3-pypdf \
     poppler-utils \
+    cabextract \
+    ttf-mscorefonts-installer \
+    fonts-liberation \
+    fonts-croscore \
+    fonts-crosextra-caladea \
+    fonts-crosextra-carlito \
+    fonts-dejavu \
+    fonts-urw-base35 \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-create the sandbox user (UID 10001)

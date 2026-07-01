@@ -664,7 +664,9 @@
             <p style="font-size: 0.775rem; color: var(--text-secondary); line-height: 1.45; margin: 0;">
                 This dashboard executes arbitrary Python 3 code inside a namespace-isolated rootless container. 
                 <strong>Pre-installed libraries/utilities:</strong> <code>PIL</code> (Pillow), <code>reportlab</code> (PDF generator), <code>pypdf</code>, and <code>poppler-utils</code> (includes <code>pdftoppm</code> for PDF-to-TIFF rendering).
-                <strong>Storage:</strong> Files written to <code>/output</code> inside your Python script are retrieved as base64 and previewed. 
+                <strong>Standard Core Fonts:</strong> Container is equipped with standard Microsoft/macOS fonts (Arial, Times New Roman, Courier New, Calibri, Helvetica, DejaVu, etc.) for high-fidelity text rendering in PDFs and images.
+                <strong>Input Directory:</strong> Files uploaded in the "Input Files" pane above are mapped as a read-only volume inside the container at <code>/input/</code> (e.g. <code>/input/filename.txt</code>).
+                <strong>Output Storage:</strong> Files written to <code>/output/</code> inside your Python script are base64-encoded, returned to the host, and displayed in the file list.
                 <strong>Network Egress:</strong> Locked to <code>offline</code> (strictly blocked for security compliance).
             </p>
         </div>
