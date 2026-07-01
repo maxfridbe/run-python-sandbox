@@ -626,32 +626,25 @@ c.drawRightString(width - 50, 50, "Verified execution. Metrics: OK.")
 c.save()
 print(f"ReportLab PDF saved successfully to {pdf_path}")
 
-# 3. Generate a high-fidelity TIFF preview of the report (using PIL)
-print("Generating TIFF file preview...")
-tiff_path = "/output/report_preview.tiff"
-tiff_img = Image.new("RGB", (600, 750), color="#0a0b10")
-tiff_draw = ImageDraw.Draw(tiff_img)
-
-# Replicate PDF report visual styles on the TIFF canvas
-tiff_draw.rectangle([15, 15, 585, 735], outline="#00f2fe", width=2)
-tiff_draw.text((40, 40), "run-python-sandbox Execution Report Preview", fill="#00f2fe")
-tiff_draw.text((40, 65), "This TIFF preview was generated concurrently with the PDF.", fill="#9ca3af")
-
-# Embed the generated pillow pattern image inside the TIFF file
+# 3. Render PDF page 1 into a high-fidelity TIFF file using pdftoppm (from poppler-utils)
+print("Rendering PDF page 1 to TIFF format...")
 try:
-    embedded = Image.open(pil_image_path)
-    # Resize slightly to fit beautifully
-    embedded = embedded.resize((450, 225))
-    tiff_img.paste(embedded, (75, 120))
+    import subprocess
+    # Run pdftoppm to convert page 1 to tiff at 150 DPI resolution
+    subprocess.run([
+        "pdftoppm", "-tiff", "-f", "1", "-l", "1", "-r", "150",
+        pdf_path, "/output/report_preview"
+    ], check=True)
+    
+    # pdftoppm outputs /output/report_preview-1.tif. Let's rename it to report_preview.tiff
+    if os.path.exists("/output/report_preview-1.tif"):
+        os.rename("/output/report_preview-1.tif", "/output/report_preview.tiff")
+    elif os.path.exists("/output/report_preview-1.tiff"):
+        os.rename("/output/report_preview-1.tiff", "/output/report_preview.tiff")
+        
+    print("TIFF preview file rendered successfully from PDF page.")
 except Exception as e:
-    tiff_draw.text((75, 120), f"Error loading embedded PIL image: {e}", fill="#ef4444")
-
-tiff_draw.ellipse([250, 420, 350, 520], outline="#9b51e0", width=4)
-tiff_draw.text((40, 680), "Double-sandboxed environment. Network egress: offline. Storage layer: VFS.", fill="#9ca3af")
-
-# Save in TIFF format
-tiff_img.save(tiff_path, format="TIFF")
-print(f"TIFF preview saved successfully to {tiff_path}")
+    print(f"Error rendering TIFF from PDF: {e}")
 
 print("=== Run Successful ===")
 `;

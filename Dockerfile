@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-reportlab \
     python3-pil \
     python3-pypdf \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-create the sandbox user (UID 10001)
