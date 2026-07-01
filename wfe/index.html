@@ -671,13 +671,32 @@
     </div>
 
     <main>
-        <!-- Editor Pane -->
-        <div class="pane">
-            <div class="pane-header">
-                Python Editor
-                <span class="badge badge-info">sandbox env</span>
+        <!-- Editor & Input Column -->
+        <div style="display: flex; flex-direction: column; gap: 2rem;">
+            <!-- Input Files Pane -->
+            <div class="pane">
+                <div class="pane-header">
+                    <span>Input Files (/input)</span>
+                    <label for="input-file-upload" class="server-btn" style="cursor: pointer; padding: 0.2rem 0.6rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem;">
+                        📤 Upload File
+                    </label>
+                    <input type="file" id="input-file-upload" multiple style="display: none;" />
+                </div>
+                <div style="padding: 1.5rem;">
+                    <div id="input-file-list" class="file-list">
+                        <div class="placeholder-text" style="grid-column: 1/-1;">No files uploaded yet. Files will be mounted in `/input/`.</div>
+                    </div>
+                </div>
             </div>
-            <div id="editor-container"></div>
+
+            <!-- Editor Pane -->
+            <div class="pane">
+                <div class="pane-header">
+                    Python Editor
+                    <span class="badge badge-info">sandbox env</span>
+                </div>
+                <div id="editor-container"></div>
+            </div>
         </div>
 
         <!-- Output Pane -->
@@ -738,19 +757,7 @@
                     </div>
                 </div>
 
-                <!-- Input Files Section -->
-                <div class="files-box">
-                    <div class="console-title" style="display: flex; justify-content: space-between; align-items: center;">
-                        <span>Input Files (/input)</span>
-                        <label for="input-file-upload" class="server-btn" style="cursor: pointer; padding: 0.2rem 0.6rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem;">
-                            📤 Upload File
-                        </label>
-                        <input type="file" id="input-file-upload" multiple style="display: none;" />
-                    </div>
-                    <div id="input-file-list" class="file-list">
-                        <div class="placeholder-text" style="grid-column: 1/-1;">No files uploaded yet. Files will be mounted in `/input/`.</div>
-                    </div>
-                </div>
+
 
                 <!-- Generated Files Section -->
                 <div class="files-box">
