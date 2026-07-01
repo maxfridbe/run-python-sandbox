@@ -15,8 +15,11 @@ This implementation is based on the security models and concepts explored in the
 * **Namespace Sandboxing**: Isolates Mount and PID namespaces per execution using `unshare`.
 * **Safe Nested Podman**: Spawns nested rootless containers inside the sandbox using Podman's VFS storage driver.
 * **Locked Egress Control**: Hardcoded network-disabled (`offline`) policies on API workers and UI for ultimate security compliance.
+* **Input Directory Mounting**: Upload files in the UI or pass them in the API to mount them as a read-only volume inside the container at `/input/`.
+* **Standard Core Windows/macOS Fonts**: Equips the container with Microsoft core fonts (Arial, Times, Courier, etc.), ChromeOS core/extra fonts (Arimo, Tinos, Cousine, Carlito, Caladea), and DejaVu/URW-base35 fonts for high-fidelity text rendering in PDFs and images.
+* **Request GUID Tracing**: Assigns a unique trace GUID to every script run, standardizing temporary host directories to `/tmp/sandbox-out-[guid]` and `/tmp/sandbox-in-[guid]`.
 * **Hardware-Independent Performance Metrics**: Captures scheduler context switches and filesystem I/O metrics for node-independent codebase comparisons.
-* **Interactive Monaco Web UI**: Pastable Python editor with dynamic module autocomplete, live output previews (images, text, PDF rendering via PDF.js, and TIFF rendering via LibTiff WebAssembly), and configurable CPU and RAM limit controls.
+* **Interactive Monaco Web UI**: Pastable Python editor with dynamic module autocomplete, file upload input zone, live output previews (images, text, PDF rendering via PDF.js, and TIFF rendering via LibTiff WebAssembly), and configurable CPU and RAM limit controls.
 
 ---
 
@@ -57,27 +60,31 @@ Outbound internet access is blocked dynamically. For security compliance:
 
 ---
 
-## API Contract: On-Demand HTTP Services (Go & Rust)
+## API Contract: On-Demand HTTP Services (Go, Rust, & .NET)
 
-Both services expose a `POST /run` endpoint:
+All three services expose a `POST /run` endpoint:
 
 **Request Payload:**
 ```json
 {
-  "code": "import PIL; print('Hello from PIL!')",
+  "code": "import os; print(os.listdir('/input'))",
   "network": "offline",
   "cpus": 1.0,
-  "memory_mb": 4096
+  "memory_mb": 4096,
+  "input_files": {
+    "data.txt": "SGVsbG8gd29ybGQ="
+  }
 }
 ```
 
 * **`cpus`** (float): Limits the container's CPU allocation (e.g. `0.25`, `0.5`, `1.0`, `2.0`). Use `0.0` for unlimited.
 * **`memory_mb`** (integer): Limits the container's RAM allocation in MB (e.g. `256`, `512`, `1024`, `4096`). Use `0` for unlimited.
+* **`input_files`** (object): Dictionary mapping filenames to their Base64-encoded file contents. These files are mounted read-only to `/input/` inside the container.
 
 **Response Payload:**
 ```json
 {
-  "stdout": "Hello from PIL!\n",
+  "stdout": "['data.txt']\n",
   "stderr": "",
   "exit_code": 0,
   "metrics": {
@@ -91,12 +98,11 @@ Both services expose a `POST /run` endpoint:
     "voluntary_context_switches": 31,
     "involuntary_context_switches": 5
   },
-  "output_files": {
-    "report.pdf": "YmFzZTY0IGNvbnRlbnQ..."
-  }
+  "output_files": {},
+  "run_id": "97e68c07-b280-4dfa-b108-a53b519bfb8d"
 }
 ```
-*Note: Any output files written by the sandboxed python execution to `/output` are base64-encoded and returned in the `output_files` map.*
+*Note: Any output files written by the sandboxed python execution to `/output` are base64-encoded and returned in the `output_files` map. The `run_id` contains the unique request trace GUID.*
 
 ### Node-Independent Metrics
 * **`fs_inputs` & `fs_outputs`**: The number of filesystem blocks read and written.
@@ -108,25 +114,25 @@ Both services expose a `POST /run` endpoint:
 ## Running the Services
 
 ### Running the Go Service
-Change into the `server_go` directory, build, and run:
+Change into the Go server directory, build, and run:
 ```bash
-cd server_go
+cd server/server_go
 go build -o server_go_bin main.go
 PORT=8080 ./server_go_bin
 ```
 
 ### Running the Rust Service
-Change into the `server_rust` directory, build, and run:
+Change into the Rust server directory, build, and run:
 ```bash
-cd server_rust
+cd server/server_rust
 cargo run --release
 ```
-*Note: The Rust service utilizes fully asynchronous Tokio subprocess handling for low latency.*
+*Note: The Rust service utilizes fully asynchronous Axum and Tokio subprocess handling for low latency.*
 
 ### Running the .NET Service
-Change into the `server_dotnet` directory, build, and run:
+Change into the .NET server directory, build, and run:
 ```bash
-cd server_dotnet
+cd server/server_dotnet
 dotnet run --configuration Release
 ```
 *Note: The .NET service uses a high-performance Minimal API backend with asynchronous process spawning.*
