@@ -4,6 +4,8 @@ A secure, rootless Podman-in-Podman container designed to execute untrusted Pyth
 
 This implementation is based on the security models and concepts explored in the article: [Unix solved this satisfactorily in 1971. We took two days to figure that out.](https://www.ikangai.com/unix-solved-this-satisfactorily-in-1971-we-took-two-days-to-figure-that-out/)
 
+![Interactive Web Dashboard](media/screenshot.jpg)
+
 ---
 
 ## Key Features
