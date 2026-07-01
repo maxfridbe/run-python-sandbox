@@ -322,16 +322,29 @@ func handleTiff(w http.ResponseWriter, r *http.Request) {
 	w.Write(content)
 }
 
+func enableCORS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func main() {
 	port := "8080"
 	if envPort := os.Getenv("PORT"); envPort != "" {
 		port = envPort
 	}
 
-	http.HandleFunc("/", handleIndex)
-	http.HandleFunc("/run", handleRun)
-	http.HandleFunc("/libraries", handleLibraries)
-	http.HandleFunc("/tiff.min.js", handleTiff)
+	http.HandleFunc("/", enableCORS(handleIndex))
+	http.HandleFunc("/run", enableCORS(handleRun))
+	http.HandleFunc("/libraries", enableCORS(handleLibraries))
+	http.HandleFunc("/tiff.min.js", enableCORS(handleTiff))
 	log.Printf("[Go Worker Service] Listening on port %s...", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("Server failed to start: %v", err)

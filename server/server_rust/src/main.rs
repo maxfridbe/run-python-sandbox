@@ -2,8 +2,9 @@
 
 use anyhow::{Context, Result};
 use axum::{
-    http::StatusCode,
-    response::Html,
+    http::{HeaderValue, Method, StatusCode},
+    middleware::Next,
+    response::{Html, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -77,15 +78,35 @@ pub struct RunResponse {
 ///
 /// # Errors
 /// Returns an error if the server fails to bind or start.
+async fn cors_middleware(request: axum::extract::Request, next: Next) -> Response {
+    let method = request.method().clone();
+    if method == Method::OPTIONS {
+        let mut response = Response::default();
+        let headers = response.headers_mut();
+        headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+        headers.insert("access-control-allow-methods", HeaderValue::from_static("GET, POST, OPTIONS"));
+        headers.insert("access-control-allow-headers", HeaderValue::from_static("content-type, authorization"));
+        return response;
+    }
+
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    headers.insert("access-control-allow-methods", HeaderValue::from_static("GET, POST, OPTIONS"));
+    headers.insert("access-control-allow-headers", HeaderValue::from_static("content-type, authorization"));
+    response
+}
+
 #[tokio::main]
 pub async fn main() -> Result<()> {
     let app = Router::new()
         .route("/", get(handle_index))
         .route("/run", post(handle_run))
         .route("/libraries", get(handle_libraries))
-        .route("/tiff.min.js", get(handle_tiff));
+        .route("/tiff.min.js", get(handle_tiff))
+        .layer(axum::middleware::from_fn(cors_middleware));
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8081".to_string());
     let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

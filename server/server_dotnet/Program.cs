@@ -4,6 +4,17 @@ using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Enable CORS services
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
+
 // Ensure we support JSON serialization options matching snake_case naming style
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -13,8 +24,11 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
+// Enable CORS middleware
+app.UseCors();
+
 // Configure the port from environment variable PORT (standard behavior)
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8082";
 app.Urls.Clear();
 app.Urls.Add($"http://0.0.0.0:{port}");
 

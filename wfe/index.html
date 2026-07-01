@@ -419,6 +419,39 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        .server-selector {
+            display: flex;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 0.25rem;
+            border-radius: 8px;
+            gap: 0.25rem;
+            margin-left: 2rem;
+        }
+
+        .server-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            padding: 0.45rem 1rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .server-btn:hover {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .server-btn.active {
+            color: #fff;
+            background: var(--glow-cyan);
+            box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -427,6 +460,11 @@
         <div class="logo">
             <div class="logo-icon"></div>
             run-python-sandbox
+        </div>
+        <div class="server-selector">
+            <button class="server-btn active" data-port="8080" id="btn-srv-go">Go Server (8080)</button>
+            <button class="server-btn" data-port="8082" id="btn-srv-dotnet">C# Server (8082)</button>
+            <button class="server-btn" data-port="8081" id="btn-srv-rust">Rust Server (8081)</button>
         </div>
         <div class="controls">
             <div style="font-size: 0.85rem; color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05); padding: 0.55rem 1rem; border-radius: 8px; font-weight: 500; display: flex; align-items: center; gap: 0.5rem; cursor: default;" title="Sandbox network access is strictly disabled for security compliance.">
@@ -651,6 +689,55 @@ print("=== Run Successful ===")
 
         let editor;
         let generatedFiles = {}; // Maps filename -> base64 content
+        let targetServerOrigin = window.location.origin;
+        let sandboxLibs = ['PIL', 'reportlab', 'pypdf', 'os', 'sys', 'json', 'math', 'urllib', 'time'];
+
+        function updateSandboxLibraries() {
+            fetch(targetServerOrigin + '/libraries')
+                .then(res => res.json())
+                .then(libs => {
+                    sandboxLibs = libs;
+                })
+                .catch(err => {
+                    console.warn("Failed to fetch libraries from active server:", err);
+                });
+        }
+
+        // Setup server selection buttons
+        const savedPort = localStorage.getItem('selected-server-port');
+        if (savedPort) {
+            targetServerOrigin = window.location.protocol + '//' + window.location.hostname + ':' + savedPort;
+            document.querySelectorAll('.server-btn').forEach(btn => {
+                if (btn.getAttribute('data-port') === savedPort) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        } else {
+            const currentPort = window.location.port || '8080';
+            document.querySelectorAll('.server-btn').forEach(btn => {
+                if (btn.getAttribute('data-port') === currentPort) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+
+        document.querySelectorAll('.server-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.server-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const port = btn.getAttribute('data-port');
+                localStorage.setItem('selected-server-port', port);
+                targetServerOrigin = window.location.protocol + '//' + window.location.hostname + ':' + port;
+                updateSandboxLibraries();
+            });
+        });
+
+        // Initialize libraries from the active target port
+        updateSandboxLibraries();
 
         // Load Monaco Editor
         require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
@@ -683,73 +770,68 @@ print("=== Run Successful ===")
                 padding: { top: 16 }
             });
 
-            // Fetch available libraries dynamically and register code completion
-            fetch('/libraries')
-                .then(res => res.json())
-                .catch(() => ['PIL', 'reportlab', 'pypdf', 'os', 'sys', 'json', 'math', 'urllib', 'time'])
-                .then(libs => {
-                    monaco.languages.registerCompletionItemProvider('python', {
-                        provideCompletionItems: function (model, position) {
-                            const word = model.getWordUntilPosition(position);
-                            const range = {
-                                startLineNumber: position.lineNumber,
-                                endLineNumber: position.lineNumber,
-                                startColumn: word.startColumn,
-                                endColumn: word.endColumn
-                            };
+            // Register code completion provider using sandboxLibs variable
+            monaco.languages.registerCompletionItemProvider('python', {
+                provideCompletionItems: function (model, position) {
+                    const word = model.getWordUntilPosition(position);
+                    const range = {
+                        startLineNumber: position.lineNumber,
+                        endLineNumber: position.lineNumber,
+                        startColumn: word.startColumn,
+                        endColumn: word.endColumn
+                    };
 
-                            const suggestions = [];
+                    const suggestions = [];
 
-                            // 1. Add module suggestions dynamically from response
-                            libs.forEach(lib => {
-                                suggestions.push({
-                                    label: lib,
-                                    kind: monaco.languages.CompletionItemKind.Module,
-                                    insertText: lib,
-                                    range: range,
-                                    detail: `Available Sandbox Library: ${lib}`
-                                });
-                            });
-
-                            // 2. Add extra class completions for major pre-installed libraries
-                            if (libs.includes('PIL')) {
-                                ['Image', 'ImageDraw', 'ImageFilter', 'ImageFont', 'ImageReader'].forEach(c => {
-                                    suggestions.push({
-                                        label: c,
-                                        kind: monaco.languages.CompletionItemKind.Class,
-                                        insertText: c,
-                                        range: range,
-                                        detail: `PIL Class: ${c}`
-                                    });
-                                });
-                            }
-                            if (libs.includes('reportlab')) {
-                                ['canvas', 'letter', 'utils'].forEach(c => {
-                                    suggestions.push({
-                                        label: c,
-                                        kind: monaco.languages.CompletionItemKind.Module,
-                                        insertText: c,
-                                        range: range,
-                                        detail: `reportlab Module/Class: ${c}`
-                                    });
-                                });
-                            }
-                            if (libs.includes('pypdf')) {
-                                ['PdfReader', 'PdfWriter', 'PdfMerger'].forEach(c => {
-                                    suggestions.push({
-                                        label: c,
-                                        kind: monaco.languages.CompletionItemKind.Class,
-                                        insertText: c,
-                                        range: range,
-                                        detail: `pypdf Class: ${c}`
-                                    });
-                                });
-                            }
-
-                            return { suggestions: suggestions };
-                        }
+                    // 1. Add module suggestions dynamically from response
+                    sandboxLibs.forEach(lib => {
+                        suggestions.push({
+                            label: lib,
+                            kind: monaco.languages.CompletionItemKind.Module,
+                            insertText: lib,
+                            range: range,
+                            detail: `Available Sandbox Library: ${lib}`
+                        });
                     });
-                });
+
+                    // 2. Add extra class completions for major pre-installed libraries
+                    if (sandboxLibs.includes('PIL') || sandboxLibs.includes('Pillow')) {
+                        ['Image', 'ImageDraw', 'ImageFilter', 'ImageFont', 'ImageReader'].forEach(c => {
+                            suggestions.push({
+                                label: c,
+                                kind: monaco.languages.CompletionItemKind.Class,
+                                insertText: c,
+                                range: range,
+                                detail: `PIL Class: ${c}`
+                            });
+                        });
+                    }
+                    if (sandboxLibs.includes('reportlab')) {
+                        ['canvas', 'letter', 'utils'].forEach(c => {
+                            suggestions.push({
+                                label: c,
+                                kind: monaco.languages.CompletionItemKind.Module,
+                                insertText: c,
+                                range: range,
+                                detail: `reportlab Module/Class: ${c}`
+                            });
+                        });
+                    }
+                    if (sandboxLibs.includes('pypdf')) {
+                        ['PdfReader', 'PdfWriter', 'PdfMerger'].forEach(c => {
+                            suggestions.push({
+                                label: c,
+                                kind: monaco.languages.CompletionItemKind.Class,
+                                insertText: c,
+                                range: range,
+                                detail: `pypdf Class: ${c}`
+                            });
+                        });
+                    }
+
+                    return { suggestions: suggestions };
+                }
+            });
         });
 
         // Elements
@@ -788,7 +870,7 @@ print("=== Run Successful ===")
             };
 
             try {
-                const response = await fetch('/run', {
+                const response = await fetch(targetServerOrigin + '/run', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)

@@ -17,3 +17,8 @@ test_out_*
 # .NET Build Outputs
 server/server_dotnet/bin/
 server/server_dotnet/obj/
+
+# Server run logs
+server/server_go/*.log
+server/server_rust/*.log
+server/server_dotnet/*.log
