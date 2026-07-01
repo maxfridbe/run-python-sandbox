@@ -19,7 +19,73 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" integrity="sha384-UcP5/iVWyRzIhnVjcB2o9W1eoYKL5fAhHTRzvFZg8ctOsoAoDeBQyQuyIk+BJ/nh" crossorigin="anonymous"></script>
 
     <style>
-        :root {
+    :root {
+            --bg-deep: #f6f8fa;
+            --bg-card: #ffffff;
+            --bg-input: #ffffff;
+            --border: rgba(31, 35, 40, 0.15);
+            --text-primary: #24292f;
+            --text-secondary: #57606a;
+            --glow-cyan: #0969da;
+            --glow-purple: #8250df;
+            --accent-green: #1a7f37;
+            --accent-red: #cf222e;
+            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        body.theme-github-light {
+            --bg-deep: #f6f8fa;
+            --bg-card: #ffffff;
+            --bg-input: #ffffff;
+            --border: rgba(31, 35, 40, 0.15);
+            --text-primary: #24292f;
+            --text-secondary: #57606a;
+            --glow-cyan: #0969da;
+            --glow-purple: #8250df;
+            --accent-green: #1a7f37;
+            --accent-red: #cf222e;
+        }
+
+        body.theme-cyber-light {
+            --bg-deep: #f0f3f6;
+            --bg-card: rgba(255, 255, 255, 0.85);
+            --bg-input: #ffffff;
+            --border: rgba(15, 23, 42, 0.08);
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --glow-cyan: #0ea5e9;
+            --glow-purple: #d946ef;
+            --accent-green: #10b981;
+            --accent-red: #f43f5e;
+        }
+
+        body.theme-solarized-light {
+            --bg-deep: #fdf6e3;
+            --bg-card: #eee8d5;
+            --bg-input: #fdf6e3;
+            --border: rgba(88, 110, 117, 0.15);
+            --text-primary: #586e75;
+            --text-secondary: #657b83;
+            --glow-cyan: #2aa198;
+            --glow-purple: #6c71c4;
+            --accent-green: #859900;
+            --accent-red: #dc322f;
+        }
+
+        body.theme-dracula-light {
+            --bg-deep: #f8f8f2;
+            --bg-card: #eaeaea;
+            --bg-input: #f8f8f2;
+            --border: rgba(40, 42, 54, 0.15);
+            --text-primary: #282a36;
+            --text-secondary: #44475a;
+            --glow-cyan: #8be9fd;
+            --glow-purple: #bd93f9;
+            --accent-green: #50fa7b;
+            --accent-red: #ff5555;
+        }
+
+        body.theme-cyber-dark {
             --bg-deep: #0a0b10;
             --bg-card: rgba(20, 22, 33, 0.7);
             --bg-input: #12131c;
@@ -30,7 +96,45 @@
             --glow-purple: #9b51e0;
             --accent-green: #10b981;
             --accent-red: #ef4444;
-            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        body.theme-github-dark {
+            --bg-deep: #0d1117;
+            --bg-card: #161b22;
+            --bg-input: #0d1117;
+            --border: rgba(48, 54, 61, 0.8);
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --glow-cyan: #58a6ff;
+            --glow-purple: #bc8cff;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+        }
+
+        body.theme-dracula {
+            --bg-deep: #282a36;
+            --bg-card: #1e1f29;
+            --bg-input: #282a36;
+            --border: rgba(0, 0, 0, 0.15);
+            --text-primary: #f8f8f2;
+            --text-secondary: #6272a4;
+            --glow-cyan: #8be9fd;
+            --glow-purple: #bd93f9;
+            --accent-green: #50fa7b;
+            --accent-red: #ff5555;
+        }
+
+        body.theme-solarized-dark {
+            --bg-deep: #002b36;
+            --bg-card: #073642;
+            --bg-input: #002b36;
+            --border: rgba(255, 255, 255, 0.05);
+            --text-primary: #93a1a1;
+            --text-secondary: #839496;
+            --glow-cyan: #2aa198;
+            --glow-purple: #6c71c4;
+            --accent-green: #859900;
+            --accent-red: #dc322f;
         }
 
         * {
@@ -391,11 +495,12 @@
             overflow-y: auto;
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.8rem;
-            background-color: #08090d;
+            background-color: var(--bg-deep);
+            color: var(--text-primary);
             padding: 1rem;
             border-radius: 4px;
             white-space: pre-wrap;
-            border: 1px solid rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border);
             text-align: left;
         }
 
@@ -467,6 +572,20 @@
             <button class="server-btn" data-port="8081" id="btn-srv-rust">Rust Server (8081)</button>
         </div>
         <div class="controls">
+            <select id="theme-select" title="Switch Theme">
+                <optgroup label="Light Themes">
+                    <option value="github-light" selected>GitHub Light</option>
+                    <option value="cyber-light">Cyber Light</option>
+                    <option value="solarized-light">Solarized Light</option>
+                    <option value="dracula-light">Dracula Light</option>
+                </optgroup>
+                <optgroup label="Dark Themes">
+                    <option value="cyber-dark">Cyber Dark</option>
+                    <option value="github-dark">GitHub Dark</option>
+                    <option value="dracula">Dracula Dark</option>
+                    <option value="solarized-dark">Solarized Dark</option>
+                </optgroup>
+            </select>
             <div style="font-size: 0.85rem; color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05); padding: 0.55rem 1rem; border-radius: 8px; font-weight: 500; display: flex; align-items: center; gap: 0.5rem; cursor: default;" title="Sandbox network access is strictly disabled for security compliance.">
                 🔒 Egress Disabled
             </div>
@@ -739,6 +858,39 @@ print("=== Run Successful ===")
         // Initialize libraries from the active target port
         updateSandboxLibraries();
 
+        // Theme management logic
+        const $themeSelect = document.getElementById('theme-select');
+        const isLightTheme = (t) => ['github-light', 'cyber-light', 'solarized-light', 'dracula-light'].includes(t);
+
+        function applyTheme(theme) {
+            // Remove previous theme classes
+            document.body.className = document.body.className.replace(/\btheme-[a-zA-Z0-9-]+\b/g, '').trim();
+            document.body.classList.add(`theme-${theme}`);
+            
+            if ($themeSelect) {
+                $themeSelect.value = theme;
+            }
+
+            // Update Monaco Editor theme dynamically if loaded
+            if (typeof monaco !== 'undefined' && monaco.editor) {
+                const monacoTheme = isLightTheme(theme) ? 'vs' : (theme === 'cyber-dark' ? 'sandbox-theme' : 'vs-dark');
+                monaco.editor.setTheme(monacoTheme);
+            }
+        }
+
+        // Handle dropdown selection
+        if ($themeSelect) {
+            $themeSelect.addEventListener('change', (e) => {
+                const selected = e.target.value;
+                localStorage.setItem('selected-theme', selected);
+                applyTheme(selected);
+            });
+        }
+
+        // Initialize theme on page load (before Monaco completes loading to avoid flash)
+        const initialTheme = localStorage.getItem('selected-theme') || 'github-light';
+        applyTheme(initialTheme);
+
         // Load Monaco Editor
         require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
         require(['vs/editor/editor.main'], function () {
@@ -759,10 +911,11 @@ print("=== Run Successful ===")
             });
 
             const $editorContainer = document.getElementById('editor-container');
+            const monacoTheme = isLightTheme(initialTheme) ? 'vs' : (initialTheme === 'cyber-dark' ? 'sandbox-theme' : 'vs-dark');
             editor = monaco.editor.create($editorContainer, {
                 value: defaultCode,
                 language: 'python',
-                theme: 'sandbox-theme',
+                theme: monacoTheme,
                 fontSize: 14,
                 fontFamily: 'JetBrains Mono',
                 minimap: { enabled: false },
