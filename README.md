@@ -120,6 +120,14 @@ cargo run --release
 ```
 *Note: The Rust service utilizes fully asynchronous Tokio subprocess handling for low latency.*
 
+### Running the .NET Service
+Change into the `server_dotnet` directory, build, and run:
+```bash
+cd server_dotnet
+dotnet run --configuration Release
+```
+*Note: The .NET service uses a high-performance Minimal API backend with asynchronous process spawning.*
+
 ---
 
 ## Test Suite

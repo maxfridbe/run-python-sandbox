@@ -12,4 +12,7 @@ __pycache__/
 
 # OS files
 .DS_Store
-Thumbs.db
+
+# .NET Build Outputs
+server_dotnet/bin/
+server_dotnet/obj/
