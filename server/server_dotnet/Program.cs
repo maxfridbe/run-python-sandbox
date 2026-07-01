@@ -132,9 +132,11 @@ app.MapPost("/run", async (RunRequest req) =>
     Console.WriteLine($"[Dotnet Worker] [Request {runId}] Processing execution request");
     var runDir = Path.Combine("/tmp", $"sandbox-run-dotnet-{runId}");
     var outDir = Path.Combine("/tmp", $"sandbox-out-{runId}");
+    var inDir = Path.Combine("/tmp", $"sandbox-in-{runId}");
 
     Directory.CreateDirectory(runDir);
     Directory.CreateDirectory(outDir);
+    Directory.CreateDirectory(inDir);
 
     // Make output directory writable by sandbox container user (UID 10001)
     try
@@ -152,6 +154,23 @@ app.MapPost("/run", async (RunRequest req) =>
     catch (Exception ex)
     {
         Console.WriteLine($"[Dotnet Worker] Warning setting permissions on outDir: {ex.Message}");
+    }
+
+    if (req.InputFiles != null)
+    {
+        foreach (var fileKvp in req.InputFiles)
+        {
+            var safeName = Path.GetFileName(fileKvp.Key);
+            try
+            {
+                var fileBytes = Convert.FromBase64String(fileKvp.Value.Trim());
+                await File.WriteAllBytesAsync(Path.Combine(inDir, safeName), fileBytes);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Dotnet Worker] Error writing input file {safeName}: {ex.Message}");
+            }
+        }
     }
 
     var pyFilePath = Path.Combine(runDir, "run.py");
@@ -183,6 +202,8 @@ app.MapPost("/run", async (RunRequest req) =>
     argsList.Add($"{pyFilePath}:/sandbox/run.py:ro");
     argsList.Add("-v");
     argsList.Add($"{outDir}:/output:rw");
+    argsList.Add("-v");
+    argsList.Add($"{inDir}:/input:ro");
     argsList.Add("run-python-sandbox");
 
     var podmanPsi = new ProcessStartInfo
@@ -277,6 +298,7 @@ app.MapPost("/run", async (RunRequest req) =>
     // Clean up temporary run directories
     try { Directory.Delete(runDir, true); } catch {}
     try { Directory.Delete(outDir, true); } catch {}
+    try { Directory.Delete(inDir, true); } catch {}
 
     var response = new RunResponse(stdout, stderr, exitCode, metrics, outputFiles, runId);
     return Results.Ok(response);
@@ -313,7 +335,13 @@ public class InnerMetrics
 }
 
 // Request and Response records
-public record RunRequest(string Code, string? Network, double? Cpus, long? MemoryMb);
+public record RunRequest(
+    string Code,
+    string? Network,
+    double? Cpus,
+    long? MemoryMb,
+    Dictionary<string, string>? InputFiles
+);
 public record Metrics(
     long WallTimeMs,
     long MaxMemoryKb,

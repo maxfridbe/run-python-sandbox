@@ -17,10 +17,11 @@ import (
 
 // RunRequest represents the payload accepted by the POST /run endpoint.
 type RunRequest struct {
-	Code     string  `json:"code"`
-	Network  string  `json:"network"` // offline, isolated, full
-	CPUs     float64 `json:"cpus"`
-	MemoryMB int64   `json:"memory_mb"`
+	Code       string            `json:"code"`
+	Network    string            `json:"network"` // offline, isolated, full
+	CPUs       float64           `json:"cpus"`
+	MemoryMB   int64             `json:"memory_mb"`
+	InputFiles map[string]string `json:"input_files"`
 }
 
 // Metrics represents the sandbox execution resource metrics.
@@ -106,6 +107,27 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 2b. Create a temp directory for input files
+	inDir := filepath.Join("/tmp", fmt.Sprintf("sandbox-in-%s", guid))
+	if err := os.MkdirAll(inDir, 0755); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create input directory: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer os.RemoveAll(inDir)
+
+	for fname, b64Content := range req.InputFiles {
+		fname = filepath.Base(fname)
+		b, err := base64.StdEncoding.DecodeString(b64Content)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to decode input file %s: %v", fname, err), http.StatusBadRequest)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(inDir, fname), b, 0644); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to write input file %s: %v", fname, err), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	// 3. Prepare the podman run command
 	cmdArgs := []string{
 		"run", "--rm",
@@ -127,6 +149,7 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		"-e", "NETWORK_MODE=offline",
 		"-v", pyFilePath+":/sandbox/run.py:ro",
 		"-v", outDir+":/output:rw",
+		"-v", inDir+":/input:ro",
 		"run-python-sandbox",
 	)
 

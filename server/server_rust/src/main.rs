@@ -32,6 +32,8 @@ pub struct RunRequest {
     pub cpus: Option<f64>,
     /// Memory limit in MB.
     pub memory_mb: Option<i64>,
+    /// Map of input files filename -> base64_content.
+    pub input_files: Option<HashMap<String, String>>,
 }
 
 /// Sandbox execution resource metrics.
@@ -222,7 +224,7 @@ async fn handle_run(Json(payload): Json<RunRequest>) -> Result<Json<RunResponse>
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    match execute_sandbox(&payload.code, &network, payload.cpus, payload.memory_mb).await {
+    match execute_sandbox(&payload.code, &network, payload.cpus, payload.memory_mb, payload.input_files.unwrap_or_default()).await {
         Ok(response) => Ok(Json(response)),
         Err(e) => {
             eprintln!("[Rust Worker] Execution error: {:?}", e);
@@ -248,7 +250,13 @@ fn generate_run_id() -> String {
 ///
 /// # Errors
 /// Returns an error if any system command, file creation, or file read fails.
-async fn execute_sandbox(code: &str, network: &str, cpus: Option<f64>, memory_mb: Option<i64>) -> Result<RunResponse> {
+async fn execute_sandbox(
+    code: &str,
+    network: &str,
+    cpus: Option<f64>,
+    memory_mb: Option<i64>,
+    input_files: HashMap<String, String>,
+) -> Result<RunResponse> {
     let run_id = generate_run_id();
     println!("[Rust Worker] [Request {}] Processing execution request", run_id);
     let temp_dir = std::path::Path::new("/tmp");
@@ -256,6 +264,7 @@ async fn execute_sandbox(code: &str, network: &str, cpus: Option<f64>, memory_mb
     // 1. Establish isolated paths for the execution run
     let run_dir = temp_dir.join(format!("sandbox-run-rust-{}", run_id));
     let out_dir = temp_dir.join(format!("sandbox-out-{}", run_id));
+    let in_dir = temp_dir.join(format!("sandbox-in-{}", run_id));
 
     fs::create_dir_all(&run_dir)
         .await
@@ -263,6 +272,9 @@ async fn execute_sandbox(code: &str, network: &str, cpus: Option<f64>, memory_mb
     fs::create_dir_all(&out_dir)
         .await
         .context("Failed to create output directory")?;
+    fs::create_dir_all(&in_dir)
+        .await
+        .context("Failed to create input directory")?;
 
     // We must ensure the output folder is writable by the container's unprivileged UID
     set_directory_writable(&out_dir).await?;
@@ -272,9 +284,19 @@ async fn execute_sandbox(code: &str, network: &str, cpus: Option<f64>, memory_mb
         .await
         .context("Failed to write python script to run_dir")?;
 
+    // Decode and write input files
+    for (fname, b64_content) in input_files {
+        if let Some(safe_name) = Path::new(&fname).file_name() {
+            if let Ok(decoded) = BASE64_STANDARD.decode(b64_content.trim()) {
+                let _ = fs::write(in_dir.join(safe_name), decoded).await;
+            }
+        }
+    }
+
     // 2. Prepare the rootless Podman execution parameters
     let py_mount = format!("{}:/sandbox/run.py:ro", py_file_path.display());
     let out_mount = format!("{}:/output:rw", out_dir.display());
+    let in_mount = format!("{}:/input:ro", in_dir.display());
 
     println!("[Rust Worker] Spawning container with network={}...", network);
     let start_time = std::time::Instant::now();
@@ -303,6 +325,7 @@ async fn execute_sandbox(code: &str, network: &str, cpus: Option<f64>, memory_mb
         "-e".to_string(), "NETWORK_MODE=offline".to_string(),
         "-v".to_string(), py_mount,
         "-v".to_string(), out_mount,
+        "-v".to_string(), in_mount,
         "run-python-sandbox".to_string(),
     ]);
 
@@ -382,6 +405,7 @@ async fn execute_sandbox(code: &str, network: &str, cpus: Option<f64>, memory_mb
     let _cleanup_run = tokio::spawn(async move {
         let _ = fs::remove_dir_all(&run_dir).await;
         let _ = fs::remove_dir_all(&out_dir).await;
+        let _ = fs::remove_dir_all(&in_dir).await;
     });
 
     Ok(RunResponse {
