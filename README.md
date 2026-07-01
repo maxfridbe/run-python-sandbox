@@ -2,6 +2,8 @@
 
 A secure, rootless Podman-in-Podman container designed to execute untrusted Python code and run "offensive" nested Podman containers safely. It implements the **Unix UID-in-container** security model to provide double-sandboxing, process-level isolation, and configurable resource allocation limits. Pre-installed tools inside the container include `reportlab` (PDF generation), `Pillow` (image editing), `pypdf`, and `poppler-utils` (`pdftoppm` CLI utility for high-fidelity PDF-to-TIFF page rendering).
 
+This implementation is based on the security models and concepts explored in the article: [Unix solved this satisfactorily in 1971. We took two days to figure that out.](https://www.ikangai.com/unix-solved-this-satisfactorily-in-1971-we-took-two-days-to-figure-that-out/)
+
 ---
 
 ## Key Features
