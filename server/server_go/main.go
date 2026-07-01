@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -42,6 +43,7 @@ type RunResponse struct {
 	ExitCode    int               `json:"exit_code"`
 	Metrics     Metrics           `json:"metrics"`
 	OutputFiles map[string]string `json:"output_files"`
+	RunID       string            `json:"run_id"`
 }
 
 func handleRun(w http.ResponseWriter, r *http.Request) {
@@ -71,9 +73,12 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	guid := generateUUID()
+	log.Printf("[Go Worker] [Request %s] Processing execution request", guid)
+
 	// 1. Create a temp directory for the execution run
-	runDir, err := os.MkdirTemp("", "sandbox-run-go-*")
-	if err != nil {
+	runDir := filepath.Join("/tmp", fmt.Sprintf("sandbox-run-go-%s", guid))
+	if err := os.MkdirAll(runDir, 0755); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create run directory: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -87,8 +92,8 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Create a temp directory for outputs
-	outDir, err := os.MkdirTemp("", "sandbox-out-go-*")
-	if err != nil {
+	outDir := filepath.Join("/tmp", fmt.Sprintf("sandbox-out-%s", guid))
+	if err := os.MkdirAll(outDir, 0777); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create output directory: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -229,6 +234,7 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		ExitCode:    exitCode,
 		Metrics:     metrics,
 		OutputFiles: outputFiles,
+		RunID:       guid,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -349,4 +355,13 @@ func main() {
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
+}
+
+func generateUUID() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

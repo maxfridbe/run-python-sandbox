@@ -128,10 +128,10 @@ app.MapGet("/libraries", async () =>
 // 4. POST /run - Run script inside sandbox
 app.MapPost("/run", async (RunRequest req) =>
 {
-    var runId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    var tempDir = Path.GetTempPath();
-    var runDir = Path.Combine(tempDir, $"sandbox-run-dotnet-{runId}");
-    var outDir = Path.Combine(tempDir, $"sandbox-out-dotnet-{runId}");
+    var runId = Guid.NewGuid().ToString();
+    Console.WriteLine($"[Dotnet Worker] [Request {runId}] Processing execution request");
+    var runDir = Path.Combine("/tmp", $"sandbox-run-dotnet-{runId}");
+    var outDir = Path.Combine("/tmp", $"sandbox-out-{runId}");
 
     Directory.CreateDirectory(runDir);
     Directory.CreateDirectory(outDir);
@@ -278,7 +278,7 @@ app.MapPost("/run", async (RunRequest req) =>
     try { Directory.Delete(runDir, true); } catch {}
     try { Directory.Delete(outDir, true); } catch {}
 
-    var response = new RunResponse(stdout, stderr, exitCode, metrics, outputFiles);
+    var response = new RunResponse(stdout, stderr, exitCode, metrics, outputFiles, runId);
     return Results.Ok(response);
 });
 
@@ -330,5 +330,6 @@ public record RunResponse(
     string Stderr,
     int ExitCode,
     Metrics Metrics,
-    Dictionary<string, string> OutputFiles
+    Dictionary<string, string> OutputFiles,
+    string RunId
 );

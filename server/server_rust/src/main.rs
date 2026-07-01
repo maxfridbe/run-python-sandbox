@@ -70,6 +70,8 @@ pub struct RunResponse {
     pub metrics: Metrics,
     /// Directory map of output filenames to base64-encoded file contents.
     pub output_files: HashMap<String, String>,
+    /// Unique execution trace ID.
+    pub run_id: String,
 }
 
 /// Launches the Axum web service.
@@ -229,15 +231,17 @@ async fn handle_run(Json(payload): Json<RunRequest>) -> Result<Json<RunResponse>
     }
 }
 
-/// Generates a unique execution run ID based on system timestamp.
-///
-/// # Panics
-/// Panics if the system time goes backwards before UNIX_EPOCH.
-fn generate_run_id() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("System time must be after UNIX EPOCH")
-        .as_nanos()
+/// Generates a unique execution run ID based on /proc/sys/kernel/random/uuid.
+fn generate_run_id() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/random/uuid")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            format!("rust-fallback-{}", nanos)
+        })
 }
 
 /// Performs filesystem preparation, asynchronous Podman invocation, and result ingestion.
@@ -246,11 +250,12 @@ fn generate_run_id() -> u128 {
 /// Returns an error if any system command, file creation, or file read fails.
 async fn execute_sandbox(code: &str, network: &str, cpus: Option<f64>, memory_mb: Option<i64>) -> Result<RunResponse> {
     let run_id = generate_run_id();
-    let temp_dir = std::env::temp_dir();
+    println!("[Rust Worker] [Request {}] Processing execution request", run_id);
+    let temp_dir = std::path::Path::new("/tmp");
 
     // 1. Establish isolated paths for the execution run
     let run_dir = temp_dir.join(format!("sandbox-run-rust-{}", run_id));
-    let out_dir = temp_dir.join(format!("sandbox-out-rust-{}", run_id));
+    let out_dir = temp_dir.join(format!("sandbox-out-{}", run_id));
 
     fs::create_dir_all(&run_dir)
         .await
@@ -385,6 +390,7 @@ async fn execute_sandbox(code: &str, network: &str, cpus: Option<f64>, memory_mb
         exit_code,
         metrics,
         output_files,
+        run_id,
     })
 }
 
