@@ -304,6 +304,24 @@ func handleLibraries(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(finalLibs)
 }
 
+func handleTiff(w http.ResponseWriter, r *http.Request) {
+	paths := []string{"tiff.min.js", "../tiff.min.js", "server_go/tiff.min.js"}
+	var content []byte
+	var err error
+	for _, p := range paths {
+		content, err = os.ReadFile(p)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		http.Error(w, "tiff.min.js not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Write(content)
+}
+
 func main() {
 	port := "8080"
 	if envPort := os.Getenv("PORT"); envPort != "" {
@@ -313,6 +331,7 @@ func main() {
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/run", handleRun)
 	http.HandleFunc("/libraries", handleLibraries)
+	http.HandleFunc("/tiff.min.js", handleTiff)
 	log.Printf("[Go Worker Service] Listening on port %s...", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("Server failed to start: %v", err)

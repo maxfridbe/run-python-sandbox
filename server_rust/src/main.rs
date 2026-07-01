@@ -82,7 +82,8 @@ pub async fn main() -> Result<()> {
     let app = Router::new()
         .route("/", get(handle_index))
         .route("/run", post(handle_run))
-        .route("/libraries", get(handle_libraries));
+        .route("/libraries", get(handle_libraries))
+        .route("/tiff.min.js", get(handle_tiff));
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let addr = format!("0.0.0.0:{}", port);
@@ -167,6 +168,23 @@ async fn handle_index() -> Result<Html<String>, StatusCode> {
     }
     eprintln!("[Rust Worker] Error: index.html not found.");
     Err(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+/// HTTP handler that serves the local tiff.min.js script.
+async fn handle_tiff() -> Result<(axum::http::HeaderMap, String), StatusCode> {
+    let paths = ["tiff.min.js", "../tiff.min.js", "server_rust/tiff.min.js"];
+    for p in &paths {
+        if let Ok(content) = fs::read_to_string(p).await {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/javascript"),
+            );
+            return Ok((headers, content));
+        }
+    }
+    eprintln!("[Rust Worker] Error: tiff.min.js not found.");
+    Err(StatusCode::NOT_FOUND)
 }
 
 /// HTTP handler that executes Python code inside the sandbox container.
