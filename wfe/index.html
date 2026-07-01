@@ -216,7 +216,6 @@
             border: 1px solid var(--ins-border);
             border-radius: 10px;
             padding: 0.85rem 1.25rem;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
         }
 
         header {
@@ -248,7 +247,6 @@
             height: 1.75rem;
             background: linear-gradient(135deg, var(--glow-cyan), var(--glow-purple));
             border-radius: 6px;
-            box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
         }
 
         .controls {
@@ -272,7 +270,6 @@
 
         select:focus {
             border-color: var(--glow-cyan);
-            box-shadow: 0 0 10px rgba(0, 242, 254, 0.2);
         }
 
         .btn-run {
@@ -293,7 +290,6 @@
 
         .btn-run:hover {
             transform: translateY(-2px);
-            box-shadow: 0 6px 25px rgba(0, 242, 254, 0.5);
             filter: brightness(1.1);
         }
 
@@ -334,7 +330,6 @@
             flex-direction: column;
             overflow: hidden;
             backdrop-filter: blur(8px);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
         }
 
         .pane-header {
@@ -525,7 +520,6 @@
             max-width: 100%;
             max-height: 350px;
             border-radius: 4px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
             background-image: 
                 linear-gradient(45deg, #181922 25%, transparent 25%), 
                 linear-gradient(-45deg, #181922 25%, transparent 25%), 
@@ -600,7 +594,6 @@
         .server-btn.active {
             color: #fff;
             background: var(--glow-cyan);
-            box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
             font-weight: 600;
         }
     </style>
@@ -908,6 +901,45 @@ print("=== Run Successful ===")
         const $themeSelect = document.getElementById('theme-select');
         const isLightTheme = (t) => ['github-light', 'cyber-light', 'solarized-light', 'dracula-light'].includes(t);
 
+        function updateFavicon() {
+            const color = getComputedStyle(document.body).getPropertyValue('--glow-cyan').trim() || '#0969da';
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            
+            // Draw a rounded rectangle matching the logo-icon style
+            ctx.fillStyle = color;
+            const r = 8;
+            ctx.beginPath();
+            ctx.moveTo(r, 0);
+            ctx.lineTo(32 - r, 0);
+            ctx.quadraticCurveTo(32, 0, 32, r);
+            ctx.lineTo(32, 32 - r);
+            ctx.quadraticCurveTo(32, 32, 32 - r, 32);
+            ctx.lineTo(r, 32);
+            ctx.quadraticCurveTo(0, 32, 0, 32 - r);
+            ctx.lineTo(0, r);
+            ctx.quadraticCurveTo(0, 0, r, 0);
+            ctx.closePath();
+            ctx.fill();
+
+            // Draw a mini white circle in the center
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(16, 16, 6, 0, 2 * Math.PI);
+            ctx.fill();
+
+            // Find or create link tag
+            let link = document.querySelector("link[rel~='icon']");
+            if (!link) {
+                link = document.createElement('link');
+                link.rel = 'icon';
+                document.getElementsByTagName('head')[0].appendChild(link);
+            }
+            link.href = canvas.toDataURL('image/png');
+        }
+
         function applyTheme(theme) {
             // Remove previous theme classes
             document.body.className = document.body.className.replace(/\btheme-[a-zA-Z0-9-]+\b/g, '').trim();
@@ -922,6 +954,9 @@ print("=== Run Successful ===")
                 const monacoTheme = isLightTheme(theme) ? 'vs' : (theme === 'cyber-dark' ? 'sandbox-theme' : 'vs-dark');
                 monaco.editor.setTheme(monacoTheme);
             }
+
+            // Update dynamic favicon
+            setTimeout(updateFavicon, 50);
         }
 
         // Handle dropdown selection
