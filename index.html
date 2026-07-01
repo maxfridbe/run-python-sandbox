@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>run-python-sandbox | Web Executor</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- PDF.js Loader -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+
+    <!-- Monaco Editor Loader -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+
+    <style>
+        :root {
+            --bg-deep: #0a0b10;
+            --bg-card: rgba(20, 22, 33, 0.7);
+            --bg-input: #12131c;
+            --border: rgba(255, 255, 255, 0.08);
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --glow-cyan: #00f2fe;
+            --glow-purple: #9b51e0;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-deep);
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background-image: 
+                radial-gradient(at 10% 10%, rgba(155, 81, 224, 0.15) 0px, transparent 50%),
+                radial-gradient(at 90% 90%, rgba(0, 242, 254, 0.12) 0px, transparent 50%);
+        }
+
+        .instructions-box {
+            flex-shrink: 0;
+            margin: 0 auto;
+            max-width: 1600px;
+            width: 100%;
+            padding: 0 2rem;
+            margin-top: 1rem;
+        }
+
+        .instructions-content {
+            background: rgba(0, 242, 254, 0.03);
+            border: 1px solid rgba(0, 242, 254, 0.12);
+            border-radius: 10px;
+            padding: 0.85rem 1.25rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+        }
+
+        header {
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            backdrop-filter: blur(12px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            background: linear-gradient(135deg, var(--glow-cyan), var(--glow-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo-icon {
+            width: 1.75rem;
+            height: 1.75rem;
+            background: linear-gradient(135deg, var(--glow-cyan), var(--glow-purple));
+            border-radius: 6px;
+            box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        select {
+            background-color: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 0.6rem 1.2rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-family: inherit;
+            outline: none;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        select:focus {
+            border-color: var(--glow-cyan);
+            box-shadow: 0 0 10px rgba(0, 242, 254, 0.2);
+        }
+
+        .btn-run {
+            background: linear-gradient(135deg, var(--glow-cyan), var(--glow-purple));
+            color: #000;
+            font-weight: 600;
+            border: none;
+            padding: 0.6rem 1.8rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: var(--transition);
+            box-shadow: 0 4px 20px rgba(0, 242, 254, 0.3);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-run:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(0, 242, 254, 0.5);
+            filter: brightness(1.1);
+        }
+
+        .btn-run:active {
+            transform: translateY(0);
+        }
+
+        .btn-run:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        main {
+            flex: 1;
+            padding: 1.5rem 2rem 2rem 2rem;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            max-width: 1600px;
+            margin: 0 auto;
+            width: 100%;
+            min-height: 0;
+        }
+
+        @media (max-width: 1024px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .pane {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            backdrop-filter: blur(8px);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .pane-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 600;
+            font-size: 0.95rem;
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+
+        .badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.6rem;
+            border-radius: 100px;
+            font-weight: 500;
+        }
+
+        .badge-info {
+            background-color: rgba(0, 242, 254, 0.1);
+            color: var(--glow-cyan);
+            border: 1px solid rgba(0, 242, 254, 0.2);
+        }
+
+        .badge-success {
+            background-color: rgba(16, 185, 129, 0.1);
+            color: var(--accent-green);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        .badge-fail {
+            background-color: rgba(239, 68, 68, 0.1);
+            color: var(--accent-red);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        #editor-container {
+            flex: 1;
+            min-height: 500px;
+        }
+
+        .output-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 1.5rem;
+            gap: 1.5rem;
+            overflow-y: auto;
+            min-height: 0;
+        }
+
+        .console-box {
+            background-color: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            min-height: 120px;
+            max-height: 250px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .console-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .stdout {
+            color: #10b981;
+        }
+
+        .stderr {
+            color: #f87171;
+        }
+
+        .files-box {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .file-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 1rem;
+        }
+
+        .file-card {
+            background-color: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transition: var(--transition);
+            cursor: pointer;
+        }
+
+        .file-card:hover {
+            border-color: var(--glow-cyan);
+            background-color: rgba(255, 255, 255, 0.02);
+            transform: translateY(-2px);
+        }
+
+        .file-card.active {
+            border-color: var(--glow-purple);
+            background: linear-gradient(135deg, rgba(155, 81, 224, 0.05), transparent);
+        }
+
+        .file-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            overflow: hidden;
+        }
+
+        .file-icon {
+            font-size: 1.5rem;
+        }
+
+        .file-name {
+            font-size: 0.85rem;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .btn-download {
+            color: var(--glow-cyan);
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0.25rem;
+            font-size: 0.875rem;
+            transition: var(--transition);
+        }
+
+        .btn-download:hover {
+            color: var(--text-primary);
+            transform: scale(1.1);
+        }
+
+        .preview-pane {
+            border: 1px solid var(--border);
+            background-color: var(--bg-input);
+            border-radius: 8px;
+            padding: 1.5rem;
+            min-height: 250px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        .preview-header {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+        }
+
+        .preview-content {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .preview-img {
+            max-width: 100%;
+            max-height: 350px;
+            border-radius: 4px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+            background-image: 
+                linear-gradient(45deg, #181922 25%, transparent 25%), 
+                linear-gradient(-45deg, #181922 25%, transparent 25%), 
+                linear-gradient(45deg, transparent 75%, #181922 75%), 
+                linear-gradient(-45deg, transparent 75%, #181922 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+        }
+
+        .preview-text {
+            width: 100%;
+            max-height: 350px;
+            overflow-y: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            background-color: #08090d;
+            padding: 1rem;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            text-align: left;
+        }
+
+        .placeholder-text {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            text-align: center;
+        }
+
+        .loader {
+            border: 3px solid rgba(255, 255, 255, 0.05);
+            border-radius: 50%;
+            border-top: 3px solid var(--glow-cyan);
+            width: 1.5rem;
+            height: 1.5rem;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">
+            <div class="logo-icon"></div>
+            run-python-sandbox
+        </div>
+        <div class="controls">
+            <div style="font-size: 0.85rem; color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05); padding: 0.55rem 1rem; border-radius: 8px; font-weight: 500; display: flex; align-items: center; gap: 0.5rem; cursor: default;" title="Sandbox network access is strictly disabled for security compliance.">
+                🔒 Egress Disabled
+            </div>
+            <select id="cpu-select" title="Limit CPU Allocation">
+                <option value="0.25">0.25 Cores</option>
+                <option value="0.5">0.5 Cores</option>
+                <option value="1" selected>1.0 Core</option>
+                <option value="2">2.0 Cores</option>
+                <option value="0">Unlimited CPU</option>
+            </select>
+            <select id="memory-select" title="Limit Memory Allocation">
+                <option value="256">256 MB</option>
+                <option value="512">512 MB</option>
+                <option value="1024">1.0 GB</option>
+                <option value="2048">2.0 GB</option>
+                <option value="4096" selected>4.0 GB</option>
+                <option value="0">Unlimited RAM</option>
+            </select>
+            <button class="btn-run" id="btn-run">
+                <div class="loader" id="run-loader"></div>
+                <span id="run-text">⚡ Run Script</span>
+            </button>
+        </div>
+    </header>
+
+    <div class="instructions-box">
+        <div class="instructions-content">
+            <h3 style="font-size: 0.85rem; color: var(--glow-cyan); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 0.5rem;">
+                <span>🤖</span> LLM Sandbox Context & Capabilities
+            </h3>
+            <p style="font-size: 0.775rem; color: var(--text-secondary); line-height: 1.45; margin: 0;">
+                This dashboard executes arbitrary Python 3 code inside a namespace-isolated rootless container. 
+                <strong>Pre-installed libraries:</strong> <code>PIL</code> (Pillow), <code>reportlab</code> (PDF generator), <code>pypdf</code>.
+                <strong>Storage:</strong> Files written to <code>/output</code> inside your Python script are retrieved as base64 and previewed. 
+                <strong>Network Egress:</strong> Locked to <code>offline</code> (strictly blocked for security compliance).
+            </p>
+        </div>
+    </div>
+
+    <main>
+        <!-- Editor Pane -->
+        <div class="pane">
+            <div class="pane-header">
+                Python Editor
+                <span class="badge badge-info">sandbox env</span>
+            </div>
+            <div id="editor-container"></div>
+        </div>
+
+        <!-- Output Pane -->
+        <div class="pane">
+            <div class="pane-header">
+                Execution Results
+                <span id="status-badge" class="badge">idle</span>
+            </div>
+            <div class="output-container">
+                <!-- Stdout Console -->
+                <div>
+                    <div class="console-title">Standard Output (stdout)</div>
+                    <div id="stdout-box" class="console-box stdout">Console idle...</div>
+                </div>
+
+                <!-- Stderr Console -->
+                <div>
+                    <div class="console-title">Standard Error (stderr)</div>
+                    <div id="stderr-box" class="console-box stderr">Console idle...</div>
+                </div>
+
+                <!-- Execution Metrics -->
+                <div class="files-box" id="metrics-section" style="display: none;">
+                    <div class="console-title">Resource Usage & Node-Independent Comparison Metrics</div>
+                    <div class="metrics-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1rem;">
+                        <div class="file-card" style="flex-direction: column; align-items: flex-start; gap: 0.25rem; cursor: default;">
+                            <span style="font-size: 0.7rem; color: var(--text-secondary);">Wall Time (Node Rel.)</span>
+                            <span id="metric-wall-time" style="font-size: 1.05rem; font-weight: bold; color: var(--glow-cyan);">0 ms</span>
+                        </div>
+                        <div class="file-card" style="flex-direction: column; align-items: flex-start; gap: 0.25rem; cursor: default;">
+                            <span style="font-size: 0.7rem; color: var(--text-secondary);">Peak Memory (Node Rel.)</span>
+                            <span id="metric-memory" style="font-size: 1.05rem; font-weight: bold; color: var(--glow-purple);">0 KB</span>
+                        </div>
+                        <div class="file-card" style="flex-direction: column; align-items: flex-start; gap: 0.25rem; cursor: default;">
+                            <span style="font-size: 0.7rem; color: var(--text-secondary);">CPU Usage</span>
+                            <span id="metric-cpu" style="font-size: 1.05rem; font-weight: bold; color: var(--accent-green);">0%</span>
+                        </div>
+                        <div class="file-card" style="flex-direction: column; align-items: flex-start; gap: 0.25rem; cursor: default;">
+                            <span style="font-size: 0.7rem; color: var(--text-secondary);">CPU Time</span>
+                            <span id="metric-cpu-time" style="font-size: 1.05rem; font-weight: bold; color: var(--text-primary);">0.00s</span>
+                        </div>
+                        <div class="file-card" style="flex-direction: column; align-items: flex-start; gap: 0.25rem; cursor: default;">
+                            <span style="font-size: 0.7rem; color: var(--glow-cyan); font-weight: 600;">Block Reads (Node Ind.)</span>
+                            <span id="metric-fs-reads" style="font-size: 1.05rem; font-weight: bold; color: var(--glow-cyan);">0 ops</span>
+                        </div>
+                        <div class="file-card" style="flex-direction: column; align-items: flex-start; gap: 0.25rem; cursor: default;">
+                            <span style="font-size: 0.7rem; color: var(--glow-cyan); font-weight: 600;">Block Writes (Node Ind.)</span>
+                            <span id="metric-fs-writes" style="font-size: 1.05rem; font-weight: bold; color: var(--glow-cyan);">0 ops</span>
+                        </div>
+                        <div class="file-card" style="flex-direction: column; align-items: flex-start; gap: 0.25rem; cursor: default;">
+                            <span style="font-size: 0.7rem; color: var(--text-secondary);">Voluntary Yields</span>
+                            <span id="metric-voluntary-cs" style="font-size: 1.05rem; font-weight: bold; color: var(--text-primary);">0</span>
+                        </div>
+                        <div class="file-card" style="flex-direction: column; align-items: flex-start; gap: 0.25rem; cursor: default;">
+                            <span style="font-size: 0.7rem; color: var(--text-secondary);">Invol. Interrupts</span>
+                            <span id="metric-involuntary-cs" style="font-size: 1.05rem; font-weight: bold; color: var(--text-primary);">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Generated Files Section -->
+                <div class="files-box">
+                    <div class="console-title">Generated Files (/output)</div>
+                    <div id="file-list" class="file-list">
+                        <!-- Dynamic file list goes here -->
+                        <div class="placeholder-text" style="grid-column: 1/-1;">No files generated yet. Write to `/output` inside your script.</div>
+                    </div>
+                </div>
+
+                <!-- File Preview Pane -->
+                <div class="files-box">
+                    <div class="console-title">File Preview</div>
+                    <div id="preview-pane" class="preview-pane">
+                        <div class="placeholder-text">Select a generated file to preview.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Default python code
+        const defaultCode = `import os
+import sys
+from PIL import Image, ImageDraw
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+
+print("=== Starting PDF and Image Generation ===")
+print(f"UID={os.getuid()}, GID={os.getgid()}")
+
+# Ensure output directory exists
+os.makedirs("/output", exist_ok=True)
+
+# 1. Create a dynamic graphic using PIL (Pillow)
+print("Drawing image via PIL...")
+img = Image.new("RGB", (600, 300), color="#0a0b10")
+draw = ImageDraw.Draw(img)
+
+# Draw colorful overlapping geometric layers
+for i in range(120):
+    color = (i * 2, 242 - i * 2, 254 - i)
+    draw.rectangle([i * 2, i * 1, 600 - i * 2, 300 - i * 1], outline=color, width=1)
+
+# Add some circle graphics
+draw.ellipse([250, 100, 350, 200], outline="#9b51e0", width=3)
+draw.text((10, 10), "Pillow (PIL) Image Output", fill="#f3f4f6")
+
+# Save the PIL image as PNG (web native preview!)
+pil_image_path = "/output/pillow_pattern.png"
+img.save(pil_image_path)
+print(f"Pillow image saved successfully to {pil_image_path}")
+
+# 2. Compile ReportLab PDF document embedding vector drawings + PIL image
+print("Generating ReportLab PDF document...")
+pdf_path = "/output/reportlab_graphic.pdf"
+c = canvas.Canvas(pdf_path, pagesize=letter)
+width, height = letter
+
+# Header Title (using custom color and standard Helvetica font)
+c.setFillColorRGB(0.0, 0.95, 1.0) # Glowing Cyan
+c.setFont("Helvetica-Bold", 24)
+c.drawString(50, height - 70, "run-python-sandbox Execution Report")
+
+c.setFillColorRGB(0.7, 0.7, 0.7)
+c.setFont("Helvetica", 11)
+c.drawString(50, height - 95, "Generated dynamically using Python + ReportLab inside the Unix UID container sandbox.")
+
+# Draw vector shapes using ReportLab canvas
+c.setStrokeColorRGB(0.6, 0.3, 0.9) # Purple
+c.setLineWidth(3)
+c.circle(width / 2.0, height - 200, 60, stroke=1, fill=0)
+
+c.setFillColorRGB(1, 1, 1)
+c.setFont("Helvetica-Bold", 10)
+c.drawCentredString(width / 2.0, height - 203, "REPORTLAB")
+
+# Draw the PIL-generated PNG image inside the PDF
+c.drawImage(ImageReader(pil_image_path), 50, 150, width=500, height=250)
+
+# Write a footer page indicator
+c.setFillColorRGB(0.4, 0.4, 0.4)
+c.setFont("Helvetica-Oblique", 8)
+c.drawString(50, 50, "Double-sandboxed environment. Network egress: isolated. Storage layer: VFS.")
+c.drawRightString(width - 50, 50, "Verified execution. Metrics: OK.")
+
+c.save()
+print(f"ReportLab PDF saved successfully to {pdf_path}")
+print("=== Run Successful ===")
+`;
+
+        let editor;
+        let generatedFiles = {}; // Maps filename -> base64 content
+
+        // Load Monaco Editor
+        require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
+        require(['vs/editor/editor.main'], function () {
+            // Register a custom theme
+            monaco.editor.defineTheme('sandbox-theme', {
+                base: 'vs-dark',
+                inherit: true,
+                rules: [
+                    { token: 'comment', foreground: '6272a4' },
+                    { token: 'keyword', foreground: 'ff79c6' },
+                    { token: 'string', foreground: 'f1fa8c' }
+                ],
+                colors: {
+                    'editor.background': '#12131c',
+                    'editor.lineHighlightBackground': '#181922',
+                    'editorCursor.foreground': '#00f2fe'
+                }
+            });
+
+            const $editorContainer = document.getElementById('editor-container');
+            editor = monaco.editor.create($editorContainer, {
+                value: defaultCode,
+                language: 'python',
+                theme: 'sandbox-theme',
+                fontSize: 14,
+                fontFamily: 'JetBrains Mono',
+                minimap: { enabled: false },
+                automaticLayout: true,
+                padding: { top: 16 }
+            });
+
+            // Fetch available libraries dynamically and register code completion
+            fetch('/libraries')
+                .then(res => res.json())
+                .catch(() => ['PIL', 'reportlab', 'pypdf', 'os', 'sys', 'json', 'math', 'urllib', 'time'])
+                .then(libs => {
+                    monaco.languages.registerCompletionItemProvider('python', {
+                        provideCompletionItems: function (model, position) {
+                            const word = model.getWordUntilPosition(position);
+                            const range = {
+                                startLineNumber: position.lineNumber,
+                                endLineNumber: position.lineNumber,
+                                startColumn: word.startColumn,
+                                endColumn: word.endColumn
+                            };
+
+                            const suggestions = [];
+
+                            // 1. Add module suggestions dynamically from response
+                            libs.forEach(lib => {
+                                suggestions.push({
+                                    label: lib,
+                                    kind: monaco.languages.CompletionItemKind.Module,
+                                    insertText: lib,
+                                    range: range,
+                                    detail: `Available Sandbox Library: ${lib}`
+                                });
+                            });
+
+                            // 2. Add extra class completions for major pre-installed libraries
+                            if (libs.includes('PIL')) {
+                                ['Image', 'ImageDraw', 'ImageFilter', 'ImageFont', 'ImageReader'].forEach(c => {
+                                    suggestions.push({
+                                        label: c,
+                                        kind: monaco.languages.CompletionItemKind.Class,
+                                        insertText: c,
+                                        range: range,
+                                        detail: `PIL Class: ${c}`
+                                    });
+                                });
+                            }
+                            if (libs.includes('reportlab')) {
+                                ['canvas', 'letter', 'utils'].forEach(c => {
+                                    suggestions.push({
+                                        label: c,
+                                        kind: monaco.languages.CompletionItemKind.Module,
+                                        insertText: c,
+                                        range: range,
+                                        detail: `reportlab Module/Class: ${c}`
+                                    });
+                                });
+                            }
+                            if (libs.includes('pypdf')) {
+                                ['PdfReader', 'PdfWriter', 'PdfMerger'].forEach(c => {
+                                    suggestions.push({
+                                        label: c,
+                                        kind: monaco.languages.CompletionItemKind.Class,
+                                        insertText: c,
+                                        range: range,
+                                        detail: `pypdf Class: ${c}`
+                                    });
+                                });
+                            }
+
+                            return { suggestions: suggestions };
+                        }
+                    });
+                });
+        });
+
+        // Elements
+        const $btnRun = document.getElementById('btn-run');
+        const $runLoader = document.getElementById('run-loader');
+        const $runText = document.getElementById('run-text');
+        const $cpuSelect = document.getElementById('cpu-select');
+        const $memorySelect = document.getElementById('memory-select');
+        const $stdoutBox = document.getElementById('stdout-box');
+        const $stderrBox = document.getElementById('stderr-box');
+        const $fileList = document.getElementById('file-list');
+        const $previewPane = document.getElementById('preview-pane');
+        const $statusBadge = document.getElementById('status-badge');
+
+        // Run Code Trigger
+        $btnRun.addEventListener('click', async () => {
+            if (!editor) return;
+
+            // Set loading state
+            $btnRun.disabled = true;
+            $runLoader.style.display = 'block';
+            $runText.innerText = 'Running...';
+            $statusBadge.innerText = 'executing';
+            $statusBadge.className = 'badge badge-info';
+            
+            $stdoutBox.innerText = 'Executing container...';
+            $stderrBox.innerText = 'Executing container...';
+            $fileList.innerHTML = '<div class="placeholder-text" style="grid-column: 1/-1;">Executing...</div>';
+            $previewPane.innerHTML = '<div class="placeholder-text">Waiting for execution to complete...</div>';
+
+            const payload = {
+                code: editor.getValue(),
+                network: 'offline', // Locked to offline for compliance
+                cpus: parseFloat($cpuSelect.value),
+                memory_mb: parseInt($memorySelect.value)
+            };
+
+            try {
+                const response = await fetch('/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server returned HTTP ${response.status}`);
+                }
+
+                const result = await response.json();
+                
+                // Display outputs
+                $stdoutBox.innerText = result.stdout || '(no stdout)';
+                $stderrBox.innerText = result.stderr || '(no stderr)';
+                
+                // Update status badge
+                if (result.exit_code === 0) {
+                    $statusBadge.innerText = `success (0)`;
+                    $statusBadge.className = 'badge badge-success';
+                } else {
+                    $statusBadge.innerText = `failed (${result.exit_code})`;
+                    $statusBadge.className = 'badge badge-fail';
+                }
+
+                // Display metrics
+                if (result.metrics) {
+                    const $metricsSection = document.getElementById('metrics-section');
+                    const $metricWallTime = document.getElementById('metric-wall-time');
+                    const $metricMemory = document.getElementById('metric-memory');
+                    const $metricCpu = document.getElementById('metric-cpu');
+                    const $metricCpuTime = document.getElementById('metric-cpu-time');
+                    const $metricFsReads = document.getElementById('metric-fs-reads');
+                    const $metricFsWrites = document.getElementById('metric-fs-writes');
+                    const $metricVoluntaryCs = document.getElementById('metric-voluntary-cs');
+                    const $metricInvoluntaryCs = document.getElementById('metric-involuntary-cs');
+
+                    $metricsSection.style.display = 'block';
+                    $metricWallTime.innerText = `${result.metrics.wall_time_ms} ms`;
+                    $metricMemory.innerText = `${result.metrics.max_memory_kb} KB`;
+                    $metricCpu.innerText = result.metrics.cpu_percentage;
+                    const cpuTime = (result.metrics.user_time_sec + result.metrics.sys_time_sec).toFixed(2);
+                    $metricCpuTime.innerText = `${cpuTime} s`;
+                    $metricFsReads.innerText = `${result.metrics.fs_inputs} ops`;
+                    $metricFsWrites.innerText = `${result.metrics.fs_outputs} ops`;
+                    $metricVoluntaryCs.innerText = result.metrics.voluntary_context_switches;
+                    $metricInvoluntaryCs.innerText = result.metrics.involuntary_context_switches;
+                } else {
+                    const $metricsSection = document.getElementById('metrics-section');
+                    $metricsSection.style.display = 'none';
+                }
+
+                // Ingest files
+                generatedFiles = result.output_files || {};
+                renderFiles(generatedFiles);
+
+            } catch (err) {
+                $stdoutBox.innerText = '';
+                $stderrBox.innerText = `Error contacting sandbox server:\n${err.message}`;
+                $statusBadge.innerText = 'error';
+                $statusBadge.className = 'badge badge-fail';
+                $fileList.innerHTML = '<div class="placeholder-text" style="grid-column: 1/-1;">No files due to error.</div>';
+            } finally {
+                // Restore state
+                $btnRun.disabled = false;
+                $runLoader.style.display = 'none';
+                $runText.innerText = '⚡ Run Script';
+            }
+        });
+
+        // Render generated files list
+        function renderFiles(files) {
+            const filenames = Object.keys(files);
+            if (filenames.length === 0) {
+                $fileList.innerHTML = '<div class="placeholder-text" style="grid-column: 1/-1;">No files generated. Write to `/output` inside your script.</div>';
+                $previewPane.innerHTML = '<div class="placeholder-text">Select a generated file to preview.</div>';
+                return;
+            }
+
+            $fileList.innerHTML = '';
+            filenames.forEach(name => {
+                const isImage = /\.(png|jpe?g|gif|svg|webp)$/i.test(name);
+                const isPdf = /\.pdf$/i.test(name);
+                const icon = isImage ? '🖼️' : (isPdf ? '📕' : '📄');
+
+                const $card = document.createElement('div');
+                $card.className = 'file-card';
+                $card.innerHTML = `
+                    <div class="file-info">
+                        <span class="file-icon">${icon}</span>
+                        <span class="file-name" title="${name}">${name}</span>
+                    </div>
+                    <button class="btn-download" title="Download file">📥</button>
+                `;
+
+                // Add selection preview handler
+                $card.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('btn-download')) {
+                        downloadFile(name, files[name]);
+                        return;
+                    }
+                    
+                    // Highlight card
+                    document.querySelectorAll('.file-card').forEach($c => $c.classList.remove('active'));
+                    $card.classList.add('active');
+                    
+                    previewFile(name, files[name]);
+                });
+
+                $fileList.appendChild($card);
+            });
+
+            // Automatically select first file for preview
+            $fileList.firstChild.click();
+        }
+
+        // Preview File
+        function previewFile(name, base64Content) {
+            const isSvg = /\.svg$/i.test(name);
+            const isPngJpg = /\.(png|jpe?g|gif|webp)$/i.test(name);
+            const isPdf = /\.pdf$/i.test(name);
+            const isText = /\.(txt|html|json|py|sh|log|md|csv)$/i.test(name);
+
+            $previewPane.innerHTML = `
+                <div class="preview-header">
+                    <span>${name}</span>
+                    <span>size: ${Math.round((base64Content.length * 3) / 4)} bytes</span>
+                </div>
+                <div class="preview-content" id="preview-body"></div>
+            `;
+
+            const $previewBody = document.getElementById('preview-body');
+
+            if (isSvg) {
+                // Inline SVG or Render as SVG Data URI
+                const decoded = atob(base64Content);
+                // Simple sanitize/inject SVG safely
+                if (decoded.trim().startsWith('<svg')) {
+                    $previewBody.innerHTML = decoded;
+                } else {
+                    const $img = document.createElement('img');
+                    $img.src = `data:image/svg+xml;base64,${base64Content}`;
+                    $img.className = 'preview-img';
+                    $previewBody.appendChild($img);
+                }
+            } else if (isPngJpg) {
+                const $img = document.createElement('img');
+                const ext = name.split('.').pop().toLowerCase();
+                $img.src = `data:image/${ext};base64,${base64Content}`;
+                $img.className = 'preview-img';
+                $previewBody.appendChild($img);
+            } else if (isPdf) {
+                // Render PDF using PDF.js
+                try {
+                    const binaryString = atob(base64Content);
+                    const len = binaryString.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+
+                    // Render placeholder loading text
+                    $previewBody.innerHTML = '<div class="placeholder-text">Rendering PDF using PDF.js...</div>';
+
+                    // Set up pdf.js worker location
+                    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+                    const loadingTask = pdfjsLib.getDocument({data: bytes});
+                    loadingTask.promise.then(function(pdf) {
+                        // Render first page
+                        pdf.getPage(1).then(function(page) {
+                            const scale = 1.2;
+                            const viewport = page.getViewport({scale: scale});
+                            
+                            const $canvas = document.createElement('canvas');
+                            $canvas.style.display = 'block';
+                            $canvas.style.margin = '1rem auto';
+                            $canvas.style.maxWidth = '100%';
+                            $canvas.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.4)';
+                            $canvas.style.borderRadius = '4px';
+                            $canvas.style.backgroundColor = '#ffffff';
+
+                            const context = $canvas.getContext('2d');
+                            $canvas.height = viewport.height;
+                            $canvas.width = viewport.width;
+
+                            const renderContext = {
+                                canvasContext: context,
+                                viewport: viewport
+                            };
+
+                            $previewBody.innerHTML = '';
+                            $previewBody.appendChild($canvas);
+
+                            page.render(renderContext);
+                        });
+                    }).catch(err => {
+                        $previewBody.innerHTML = `<div class="placeholder-text" style="color: var(--glow-purple);">Failed to render PDF: ${err.message}</div>`;
+                    });
+                } catch (err) {
+                    $previewBody.innerHTML = `<div class="placeholder-text" style="color: var(--glow-purple);">Error loading PDF structure: ${err.message}</div>`;
+                }
+            } else if (isText) {
+                const decoded = atob(base64Content);
+                const $pre = document.createElement('pre');
+                $pre.className = 'preview-text';
+                $pre.innerText = decoded;
+                $previewBody.appendChild($pre);
+            } else {
+                // Generic Binary preview
+                $previewBody.innerHTML = `
+                    <div class="placeholder-text">
+                        📁 Preview not supported for binary file.<br>
+                        <a href="#" style="color: var(--glow-cyan); text-decoration: none; margin-top: 0.5rem; display: inline-block;" onclick="downloadFile('${name}', '${base64Content}'); return false;">Download to view locally</a>
+                    </div>
+                `;
+            }
+        }
+
+        // Trigger file download
+        function downloadFile(name, base64Content) {
+            const $link = document.createElement('a');
+            $link.href = `data:application/octet-stream;base64,${base64Content}`;
+            $link.download = name;
+            document.body.appendChild($link);
+            $link.click();
+            document.body.removeChild($link);
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Binaries & Build Outputs
+server_go/server_go_bin
+server_rust/target/
+
+# Test outputs
+test_out_*
+
+# Byte-compiled / Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS files
+.DS_Store
+Thumbs.db
