@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Clean up any old test outputs
-rm -rf ./test_out_isolation ./test_out_net_offline ./test_out_net_isolated ./test_out_nested
+rm -rf ./test_out_isolation ./test_out_net_offline ./test_out_net_isolated ./test_out_nested ./test_out_seccomp
 
 # 1. Run Isolation Test
 echo ""
@@ -75,6 +75,23 @@ else
     echo "FAIL: Nested Podman test failed or output was not captured."
     exit 1
 fi
+
+# 5. Run Seccomp Hardening Test
+echo ""
+echo "[test.sh] 5. Running hardened seccomp profile test (bpf/perf_event_open must be blocked)..."
+if [ ! -f host/seccomp-hardened.json ]; then
+    echo "[test.sh] seccomp-hardened.json missing; regenerating..."
+    ./host/make-hardened-seccomp.sh
+fi
+output_seccomp=$(python3 host/worker.py --run_py host/tests/test_seccomp.py --output_dir ./test_out_seccomp --network offline --hardened 2>&1)
+echo "$output_seccomp"
+if echo "$output_seccomp" | grep -q "RESULT_BPF_BLOCKED=True"; then
+    echo "SUCCESS: bpf syscall denied under hardened seccomp profile."
+else
+    echo "FAIL: bpf syscall was NOT blocked under the hardened profile!"
+    exit 1
+fi
+echo "--------------------------------------------------"
 
 echo ""
 echo "============================================="

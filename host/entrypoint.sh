@@ -6,24 +6,42 @@ NETWORK_MODE=${NETWORK_MODE:-offline}
 
 echo "[entrypoint.sh] Configuring network mode: $NETWORK_MODE"
 
-if [ "$NETWORK_MODE" = "offline" ]; then
-  # Block all egress for sandbox-user (UID 10001)
-  iptables -A OUTPUT -m owner --uid-owner 10001 -j REJECT
-elif [ "$NETWORK_MODE" = "isolated" ]; then
+# The sandbox python runs as UID 10001, but nested rootless Podman containers
+# run under the mapped subuid range (20000..59999 per /etc/subuid). Egress rules
+# that only match UID 10001 would leave nested containers unfiltered, so we apply
+# the same policy to both owner specs. Some iptables backends do not support a
+# uid range in the owner match; guard those rules so a failure cannot abort
+# container startup (set -e is active).
+OWNER_SPECS="10001 20000-59999"
+
+block_all_egress() {
+  local owner="$1"
+  iptables -A OUTPUT -m owner --uid-owner "$owner" -j REJECT 2>/dev/null \
+    || echo "[entrypoint.sh] WARN: could not add REJECT rule for owner $owner (unsupported by this iptables backend?)"
+}
+
+apply_isolated_egress() {
+  local owner="$1"
   # Allow slirp4netns container gateway (10.0.2.0/24) for routing/dns
-  iptables -A OUTPUT -m owner --uid-owner 10001 -d 10.0.2.0/24 -j ACCEPT
-  # Block RFC 1918, loopback, and link-local for sandbox-user
-  iptables -A OUTPUT -m owner --uid-owner 10001 -d 127.0.0.0/8 -j REJECT
-  iptables -A OUTPUT -m owner --uid-owner 10001 -d 10.0.0.0/8 -j REJECT
-  iptables -A OUTPUT -m owner --uid-owner 10001 -d 172.16.0.0/12 -j REJECT
-  iptables -A OUTPUT -m owner --uid-owner 10001 -d 192.168.0.0/16 -j REJECT
-  iptables -A OUTPUT -m owner --uid-owner 10001 -d 169.254.0.0/16 -j REJECT
-  echo "[entrypoint.sh] Isolated network mode configured (RFC1918, Loopback, Link-Local blocked)."
+  iptables -A OUTPUT -m owner --uid-owner "$owner" -d 10.0.2.0/24 -j ACCEPT 2>/dev/null || true
+  # Block RFC 1918, loopback, and link-local
+  for net in 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16; do
+    iptables -A OUTPUT -m owner --uid-owner "$owner" -d "$net" -j REJECT 2>/dev/null \
+      || echo "[entrypoint.sh] WARN: could not add isolated REJECT rule ($net) for owner $owner"
+  done
+}
+
+if [ "$NETWORK_MODE" = "offline" ]; then
+  for spec in $OWNER_SPECS; do block_all_egress "$spec"; done
+  echo "[entrypoint.sh] Offline mode: egress blocked for sandbox-user and nested-container subuids."
+elif [ "$NETWORK_MODE" = "isolated" ]; then
+  for spec in $OWNER_SPECS; do apply_isolated_egress "$spec"; done
+  echo "[entrypoint.sh] Isolated network mode configured (RFC1918, Loopback, Link-Local blocked for sandbox-user and nested subuids)."
 elif [ "$NETWORK_MODE" = "full" ]; then
   echo "[entrypoint.sh] Full network access granted to sandbox-user."
 else
   echo "[entrypoint.sh] Unknown network mode '$NETWORK_MODE'. Defaulting to offline."
-  iptables -A OUTPUT -m owner --uid-owner 10001 -j REJECT
+  for spec in $OWNER_SPECS; do block_all_egress "$spec"; done
 fi
 
 # Ensure /output is writable by sandbox-user

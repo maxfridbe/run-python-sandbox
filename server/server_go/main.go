@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,9 +13,131 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 )
+
+// Config holds the server-enforced safety limits. All values are sourced from
+// environment variables so an operator can tune them, but every request is
+// clamped to these ceilings regardless of what the client asks for.
+type Config struct {
+	Bind           string
+	Port           string
+	Token          string
+	TimeoutSec     int
+	MaxConcurrency int
+	MaxCPUs        float64
+	DefaultCPUs    float64
+	MaxMemoryMB    int64
+	DefaultMemMB   int64
+	PidsLimit      int
+	MaxBodyBytes   int64
+	MaxStreamBytes int64
+	MaxOutputBytes int64
+	SeccompProfile string
+}
+
+var cfg Config
+
+// sem bounds the number of concurrently executing sandbox containers so a burst
+// of requests cannot fork-bomb the host with podman processes.
+var sem chan struct{}
+
+func loadConfig() Config {
+	return Config{
+		Bind:           getenvStr("SANDBOX_BIND", "127.0.0.1"),
+		Port:           getenvStr("PORT", "8080"),
+		Token:          os.Getenv("SANDBOX_TOKEN"),
+		TimeoutSec:     getenvInt("SANDBOX_TIMEOUT_SEC", 60),
+		MaxConcurrency: getenvInt("SANDBOX_MAX_CONCURRENCY", 4),
+		MaxCPUs:        getenvFloat("SANDBOX_MAX_CPUS", 2.0),
+		DefaultCPUs:    getenvFloat("SANDBOX_DEFAULT_CPUS", 1.0),
+		MaxMemoryMB:    int64(getenvInt("SANDBOX_MAX_MEMORY_MB", 2048)),
+		DefaultMemMB:   int64(getenvInt("SANDBOX_DEFAULT_MEMORY_MB", 1024)),
+		PidsLimit:      getenvInt("SANDBOX_PIDS_LIMIT", 256),
+		MaxBodyBytes:   int64(getenvInt("SANDBOX_MAX_BODY_MB", 10)) * 1024 * 1024,
+		MaxStreamBytes: int64(getenvInt("SANDBOX_MAX_LOG_MB", 4)) * 1024 * 1024,
+		MaxOutputBytes: int64(getenvInt("SANDBOX_MAX_OUTPUT_MB", 32)) * 1024 * 1024,
+		SeccompProfile: resolveSeccompProfile(),
+	}
+}
+
+// resolveSeccompProfile returns the absolute path of the seccomp profile to pass
+// to podman, or "" for the default. SANDBOX_SECCOMP (explicit path) wins;
+// otherwise a truthy SANDBOX_HARDENED selects the bundled hardened profile.
+func resolveSeccompProfile() string {
+	if p := os.Getenv("SANDBOX_SECCOMP"); p != "" {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+	if v := os.Getenv("SANDBOX_HARDENED"); v == "1" || v == "true" || v == "yes" {
+		candidates := []string{
+			"host/seccomp-hardened.json",
+			"../host/seccomp-hardened.json",
+			"../../host/seccomp-hardened.json",
+			"seccomp-hardened.json",
+		}
+		for _, c := range candidates {
+			if abs, err := filepath.Abs(c); err == nil {
+				if _, err := os.Stat(abs); err == nil {
+					return abs
+				}
+			}
+		}
+		log.Printf("[Go Worker] WARNING: SANDBOX_HARDENED set but seccomp-hardened.json not found; using default seccomp.")
+	}
+	return ""
+}
+
+func getenvStr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func getenvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func getenvFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// clampCPUs forces a request into (0, MaxCPUs]. A request of <= 0 (which the
+// client could use to ask for "unlimited") is replaced by the default.
+func clampCPUs(req float64) float64 {
+	if req <= 0 {
+		req = cfg.DefaultCPUs
+	}
+	if req > cfg.MaxCPUs {
+		req = cfg.MaxCPUs
+	}
+	return req
+}
+
+func clampMemory(req int64) int64 {
+	if req <= 0 {
+		req = cfg.DefaultMemMB
+	}
+	if req > cfg.MaxMemoryMB {
+		req = cfg.MaxMemoryMB
+	}
+	return req
+}
 
 // RunRequest represents the payload accepted by the POST /run endpoint.
 type RunRequest struct {
@@ -45,6 +169,7 @@ type RunResponse struct {
 	Metrics     Metrics           `json:"metrics"`
 	OutputFiles map[string]string `json:"output_files"`
 	RunID       string            `json:"run_id"`
+	TimedOut    bool              `json:"timed_out"`
 }
 
 func handleRun(w http.ResponseWriter, r *http.Request) {
@@ -53,9 +178,12 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound request body size to protect the server from memory-exhaustion via
+	// a huge code blob or input_files payload.
+	r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		http.Error(w, "Request body too large or unreadable", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -71,6 +199,15 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Network != "offline" && req.Network != "isolated" && req.Network != "full" {
 		http.Error(w, "Network must be 'offline', 'isolated', or 'full'", http.StatusBadRequest)
+		return
+	}
+
+	// Acquire a concurrency slot or reject fast so we never queue unboundedly.
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	default:
+		http.Error(w, "Server busy: too many concurrent executions", http.StatusTooManyRequests)
 		return
 	}
 
@@ -128,22 +265,29 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. Prepare the podman run command
+	// 3. Prepare the podman run command with server-enforced resource guards.
+	cpus := clampCPUs(req.CPUs)
+	memMB := clampMemory(req.MemoryMB)
+	containerName := "sandbox-go-" + guid
+
 	cmdArgs := []string{
 		"run", "--rm",
+		"--name", containerName,
 		"--cap-add=NET_ADMIN",
 		"--cap-add=NET_RAW",
 		"--cap-add=SYS_ADMIN",
 		"--device", "/dev/net/tun",
 		"--security-opt", "label=disable",
 	}
-
-	if req.CPUs > 0 {
-		cmdArgs = append(cmdArgs, fmt.Sprintf("--cpus=%g", req.CPUs))
+	if cfg.SeccompProfile != "" {
+		cmdArgs = append(cmdArgs, "--security-opt", "seccomp="+cfg.SeccompProfile)
 	}
-	if req.MemoryMB > 0 {
-		cmdArgs = append(cmdArgs, fmt.Sprintf("--memory=%dm", req.MemoryMB))
-	}
+	cmdArgs = append(cmdArgs,
+		fmt.Sprintf("--cpus=%g", cpus),
+		fmt.Sprintf("--memory=%dm", memMB),
+		fmt.Sprintf("--pids-limit=%d", cfg.PidsLimit),
+		fmt.Sprintf("--timeout=%d", cfg.TimeoutSec),
+	)
 
 	cmdArgs = append(cmdArgs,
 		"-e", "NETWORK_MODE=offline",
@@ -153,9 +297,18 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		"run-python-sandbox",
 	)
 
-	cmd := exec.Command("podman", cmdArgs...)
+	// Hard client-side deadline as a backstop in case the podman CLI itself
+	// wedges; podman's own --timeout should stop the container first.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutSec+15)*time.Second)
+	defer cancel()
+	// Ensure the container is force-removed even if podman leaks it on timeout.
+	defer func() {
+		rm := exec.Command("podman", "rm", "-f", containerName)
+		_ = rm.Run()
+	}()
 
-	// Create pipes for stdout/stderr to capture execution run
+	cmd := exec.CommandContext(ctx, "podman", cmdArgs...)
+
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create stdout pipe: %v", err), http.StatusInternalServerError)
@@ -167,20 +320,25 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[Go Worker] Spawning container with network=%s...", req.Network)
+	log.Printf("[Go Worker] Spawning container (cpus=%g mem=%dMB timeout=%ds)...", cpus, memMB, cfg.TimeoutSec)
 	startTime := time.Now()
 	if err := cmd.Start(); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to start podman container: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Read outputs concurrently
-	stdoutBytes, _ := io.ReadAll(stdoutPipe)
-	stderrBytes, _ := io.ReadAll(stderrPipe)
+	// Read outputs with a hard cap so an infinite print loop cannot exhaust
+	// server memory.
+	stdoutBytes, _ := io.ReadAll(io.LimitReader(stdoutPipe, cfg.MaxStreamBytes))
+	stderrBytes, _ := io.ReadAll(io.LimitReader(stderrPipe, cfg.MaxStreamBytes))
 
 	exitCode := 0
+	timedOut := false
 	if err := cmd.Wait(); err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
+		if ctx.Err() == context.DeadlineExceeded {
+			timedOut = true
+			exitCode = 124
+		} else if exitError, ok := err.(*exec.ExitError); ok {
 			ws := exitError.Sys().(syscall.WaitStatus)
 			exitCode = ws.ExitStatus()
 		} else {
@@ -197,17 +355,9 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse internal metrics if generated
 	metrics := Metrics{
-		WallTimeMs:                 elapsedMs,
-		MaxMemoryKb:                0,
-		CpuPercentage:              "0%",
-		UserTimeSec:                0.0,
-		SysTimeSec:                 0.0,
-		FsInputs:                   0,
-		FsOutputs:                  0,
-		VoluntaryContextSwitches:   0,
-		InvoluntaryContextSwitches: 0,
+		WallTimeMs:    elapsedMs,
+		CpuPercentage: "0%",
 	}
 
 	metricsFilePath := filepath.Join(outDir, "metrics.json")
@@ -232,25 +382,35 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 			metrics.VoluntaryContextSwitches = innerMetrics.VoluntaryContextSwitches
 			metrics.InvoluntaryContextSwitches = innerMetrics.InvoluntaryContextSwitches
 		}
-		// Delete the metrics file from host so it's clean
 		_ = os.Remove(metricsFilePath)
 	}
 
+	// Read regular output files up to a total byte budget. IsRegular() skips
+	// symlinks, so sandboxed code cannot point us at arbitrary host files.
 	outputFiles := make(map[string]string)
+	var outputBudget = cfg.MaxOutputBytes
 	for _, file := range files {
-		if file.Type().IsRegular() && file.Name() != "metrics.json" {
-			filePath := filepath.Join(outDir, file.Name())
-			content, err := os.ReadFile(filePath)
-			if err != nil {
-				log.Printf("[Go Worker] Warning: Failed to read output file %s: %v", file.Name(), err)
-				continue
-			}
-			// Encode in base64 to handle binary files safely
-			outputFiles[file.Name()] = base64.StdEncoding.EncodeToString(content)
+		if !file.Type().IsRegular() || file.Name() == "metrics.json" {
+			continue
 		}
+		info, err := file.Info()
+		if err != nil {
+			continue
+		}
+		if info.Size() > outputBudget {
+			log.Printf("[Go Worker] Skipping output file %s: exceeds remaining output budget", file.Name())
+			continue
+		}
+		filePath := filepath.Join(outDir, file.Name())
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			log.Printf("[Go Worker] Warning: Failed to read output file %s: %v", file.Name(), err)
+			continue
+		}
+		outputBudget -= int64(len(content))
+		outputFiles[file.Name()] = base64.StdEncoding.EncodeToString(content)
 	}
 
-	// 5. Build response JSON
 	resp := RunResponse{
 		Stdout:      string(stdoutBytes),
 		Stderr:      string(stderrBytes),
@@ -258,6 +418,7 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		Metrics:     metrics,
 		OutputFiles: outputFiles,
 		RunID:       guid,
+		TimedOut:    timedOut,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -301,16 +462,16 @@ func handleLibraries(w http.ResponseWriter, r *http.Request) {
 
 	// Fallback + built-ins
 	builtins := []string{"os", "sys", "json", "math", "urllib", "time", "subprocess", "random", "re"}
-	
+
 	// Filter and convert to lower/standard names
 	seen := make(map[string]bool)
 	var finalLibs []string
-	
+
 	for _, b := range builtins {
 		seen[b] = true
 		finalLibs = append(finalLibs, b)
 	}
-	
+
 	// Map known package names to their python import names
 	packageMap := map[string]string{
 		"Pillow":    "PIL",
@@ -364,18 +525,39 @@ func enableCORS(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// requireAuth enforces a bearer token when SANDBOX_TOKEN is configured. When it
+// is empty, auth is skipped (intended for a loopback-only dev bind).
+func requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cfg.Token != "" && r.Method != http.MethodOptions {
+			expected := "Bearer " + cfg.Token
+			got := r.Header.Get("Authorization")
+			if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
 func main() {
-	port := "8080"
-	if envPort := os.Getenv("PORT"); envPort != "" {
-		port = envPort
+	cfg = loadConfig()
+	sem = make(chan struct{}, cfg.MaxConcurrency)
+
+	if cfg.Token == "" && cfg.Bind != "127.0.0.1" && cfg.Bind != "localhost" {
+		log.Printf("[Go Worker Service] WARNING: no SANDBOX_TOKEN set while binding to %s; the /run endpoint is unauthenticated.", cfg.Bind)
 	}
 
 	http.HandleFunc("/", enableCORS(handleIndex))
-	http.HandleFunc("/run", enableCORS(handleRun))
+	http.HandleFunc("/run", enableCORS(requireAuth(handleRun)))
 	http.HandleFunc("/libraries", enableCORS(handleLibraries))
 	http.HandleFunc("/tiff.min.js", enableCORS(handleTiff))
-	log.Printf("[Go Worker Service] Listening on port %s...", port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+
+	addr := cfg.Bind + ":" + cfg.Port
+	log.Printf("[Go Worker Service] Listening on %s (max_concurrency=%d, timeout=%ds, max_cpus=%g, max_mem=%dMB)...",
+		addr, cfg.MaxConcurrency, cfg.TimeoutSec, cfg.MaxCPUs, cfg.MaxMemoryMB)
+	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
