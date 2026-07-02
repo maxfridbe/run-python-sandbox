@@ -76,6 +76,44 @@ The layers, from outermost to innermost:
 
 The load-bearing boundary is **Layer 1**: because the whole stack runs inside a *rootless* Podman container, "root" anywhere inside it is only ever the unprivileged host user mapped through a user namespace. Every other layer exists to raise the cost of getting even that far, and to contain the blast radius if a layer fails.
 
+### Security controls matrix
+
+Every implemented control, the system/mechanism that provides it, where it lives, and why it exists:
+
+| # | Control | Mechanism / where implemented | Justification |
+| --- | --- | --- | --- |
+| 1 | Rootless host execution | `podman run` as an unprivileged host user; UIDs mapped through a host user namespace | A full escape lands on a powerless host account, not root. |
+| 2 | Drop to unprivileged UID | `gosu sandbox-user` (UID 10001) after setup — `entrypoint.sh` | Untrusted code never runs as UID 0 or with container caps. |
+| 3 | Private PID namespace | `unshare -p --fork` — `entrypoint.sh` | Untrusted process cannot see or signal helper/parent processes. |
+| 4 | Private mount ns + fresh `/proc` | `unshare -m --mount-proc` — `entrypoint.sh` | Prevents `/proc`-inspecting other processes; asserted by `test_isolation.py`. |
+| 5 | Minimal capabilities | only `NET_ADMIN`, `NET_RAW`, `SYS_ADMIN` added; all others dropped — `worker.py` / servers | Shrinks kernel attack surface to what nesting + egress setup require. |
+| 6 | `SYS_ADMIN` justified, not gratuitous | Verified load-bearing (nested `newuidmap`, `unshare -m` fail without it) | Kept only because removal breaks nesting; narrowed by control #8. |
+| 7 | Default seccomp profile | Podman built-in profile (never run `--security-opt seccomp=unconfined`) | Blocks the bulk of dangerous syscalls by default. |
+| 8 | **Hardened seccomp profile** (optional) | `host/seccomp-hardened.json` via `--hardened` / `SANDBOX_HARDENED` / `SANDBOX_SECCOMP` | Denies `bpf`, `perf_event_open`, `lookup_dcookie`, `fanotify_init`, `quotactl` that `SYS_ADMIN` silently re-enables; verified by `test_seccomp.py`. |
+| 9 | SELinux relabel scoped | `--security-opt label=disable` (needed for nested userns), host process stays rootless | Required for nested user namespaces; residual risk contained by rootless boundary. |
+| 10 | User-space nested storage | `vfs` driver — `storage.conf` | Nesting works without mounting host devices like `/dev/fuse` or overlay mounts. |
+| 11 | Nested subuid mapping | `/etc/subuid`/`/etc/subgid` → `20000:40000` — Dockerfile | Confines nested containers to a bounded, unprivileged subuid range. |
+| 12 | Egress policy (offline) | `iptables` owner REJECT — `entrypoint.sh` | Default: no outbound network at all. |
+| 13 | Egress policy (isolated) | `iptables` owner rules block loopback/RFC1918/link-local — `entrypoint.sh` | Blocks host-local services and cloud metadata while allowing public internet. |
+| 14 | Nested-container egress coverage | Owner rules match subuid range `20000–59999`, not just UID 10001 — `entrypoint.sh` | Nested containers run as subuids; without this they'd bypass the policy. |
+| 15 | Forced offline over the API | Services hardcode `NETWORK_MODE=offline` — Go/Rust/.NET | Web-triggered runs can never request network access. |
+| 16 | Read-only script mount | `-v run.py:/sandbox/run.py:ro` | Untrusted code cannot modify its own driver. |
+| 17 | Read-only input mount | `-v <in>:/input:ro` | Uploaded inputs can't be tampered with; no write-back channel. |
+| 18 | Per-run isolated output dir | `/tmp/sandbox-out-<GUID>` per request, removed after | One run cannot read another run's data. |
+| 19 | Path-traversal prevention | Input/output filenames reduced to basename — servers | Prevents `../` escapes writing outside intended dirs. |
+| 20 | Symlink exfiltration blocked | Output collection reads regular files only (skips symlinks) — servers | Stops sandboxed code using result collection as an arbitrary host-file read. |
+| 21 | CPU clamp | `--cpus` clamped to `(0, SANDBOX_MAX_CPUS]` — servers | Client can't request unlimited CPU; bounds noisy-neighbor impact. |
+| 22 | Memory clamp | `--memory` clamped to `(0, SANDBOX_MAX_MEMORY_MB]` — servers | Client can't request unlimited RAM; prevents host OOM. |
+| 23 | PID/fork-bomb guard | `--pids-limit` (default 256) — servers / `worker.py` | Caps process/thread count against fork bombs. |
+| 24 | Execution timeout | podman `--timeout` + client-side backstop that force-removes — servers / `worker.py` | Kills runaway/infinite runs (`exit_code` 124, `timed_out: true`). |
+| 25 | Concurrency cap | Semaphore, HTTP `429` when full — servers | Bounds simultaneous containers so a burst can't fork-bomb the host. |
+| 26 | Request body limit | `MaxBytesReader` / `DefaultBodyLimit` / Kestrel `MaxRequestBodySize` — servers | Prevents memory exhaustion from oversized payloads. |
+| 27 | Output stream caps | stdout/stderr bounded reads + total `/output` byte budget — servers | Infinite output can't exhaust server memory. |
+| 28 | Loopback bind default | `SANDBOX_BIND=127.0.0.1` default — servers | Endpoint isn't network-exposed unless explicitly opted in. |
+| 29 | Optional bearer auth | `SANDBOX_TOKEN` → `Authorization: Bearer` on `/run` — servers | Adds authentication when bound beyond loopback. |
+
+Controls 1–20 constrain **what** untrusted code can reach; 21–29 constrain **how much** it can consume and **who** can invoke it. The per-control implementation details follow.
+
 ### Layer by layer
 
 **1. Rootless host Podman (the outer sandbox).**
