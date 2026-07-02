@@ -1,10 +1,11 @@
 // Rust guideline compliant 2026-02-21
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use axum::{
+    extract::{DefaultBodyLimit, Request},
     http::{HeaderValue, Method, StatusCode},
     middleware::Next,
-    response::{Html, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -14,12 +15,122 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::Stdio;
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
+/// Server-enforced safety limits sourced from environment variables. Every
+/// request is clamped to these ceilings regardless of client-supplied values.
+#[derive(Debug)]
+struct Config {
+    bind: String,
+    port: String,
+    token: String,
+    timeout_sec: u64,
+    max_concurrency: usize,
+    max_cpus: f64,
+    default_cpus: f64,
+    max_memory_mb: i64,
+    default_mem_mb: i64,
+    pids_limit: i64,
+    max_body_bytes: usize,
+    max_stream_bytes: u64,
+    max_output_bytes: u64,
+    seccomp_profile: String,
+}
+
+static CFG: OnceLock<Config> = OnceLock::new();
+static SEM: OnceLock<Semaphore> = OnceLock::new();
+
+fn cfg() -> &'static Config {
+    CFG.get().expect("config initialized in main")
+}
+
+fn env_str(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_int<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+fn env_float(key: &str, default: f64) -> f64 {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+fn load_config() -> Config {
+    Config {
+        bind: env_str("SANDBOX_BIND", "127.0.0.1"),
+        port: env_str("PORT", "8081"),
+        token: env_str("SANDBOX_TOKEN", ""),
+        timeout_sec: env_int("SANDBOX_TIMEOUT_SEC", 60),
+        max_concurrency: env_int("SANDBOX_MAX_CONCURRENCY", 4),
+        max_cpus: env_float("SANDBOX_MAX_CPUS", 2.0),
+        default_cpus: env_float("SANDBOX_DEFAULT_CPUS", 1.0),
+        max_memory_mb: env_int("SANDBOX_MAX_MEMORY_MB", 2048),
+        default_mem_mb: env_int("SANDBOX_DEFAULT_MEMORY_MB", 1024),
+        pids_limit: env_int("SANDBOX_PIDS_LIMIT", 256),
+        max_body_bytes: env_int::<usize>("SANDBOX_MAX_BODY_MB", 10) * 1024 * 1024,
+        max_stream_bytes: env_int::<u64>("SANDBOX_MAX_LOG_MB", 4) * 1024 * 1024,
+        max_output_bytes: env_int::<u64>("SANDBOX_MAX_OUTPUT_MB", 32) * 1024 * 1024,
+        seccomp_profile: resolve_seccomp_profile(),
+    }
+}
+
+/// Resolves the seccomp profile path to pass to podman, or "" for the default.
+/// `SANDBOX_SECCOMP` (explicit path) wins; otherwise a truthy `SANDBOX_HARDENED`
+/// selects the bundled hardened profile.
+fn resolve_seccomp_profile() -> String {
+    if let Ok(p) = std::env::var("SANDBOX_SECCOMP") {
+        if !p.is_empty() {
+            return std::fs::canonicalize(&p).map(|c| c.display().to_string()).unwrap_or(p);
+        }
+    }
+    let hardened = std::env::var("SANDBOX_HARDENED").unwrap_or_default();
+    if hardened == "1" || hardened == "true" || hardened == "yes" {
+        for c in ["host/seccomp-hardened.json", "../host/seccomp-hardened.json", "../../host/seccomp-hardened.json", "seccomp-hardened.json"] {
+            if let Ok(abs) = std::fs::canonicalize(c) {
+                return abs.display().to_string();
+            }
+        }
+        eprintln!("[Rust Worker] WARNING: SANDBOX_HARDENED set but seccomp-hardened.json not found; using default seccomp.");
+    }
+    String::new()
+}
+
+/// Forces a CPU request into `(0, max_cpus]`, substituting the default for any
+/// non-positive value (which a client could use to request "unlimited").
+fn clamp_cpus(req: Option<f64>) -> f64 {
+    let c = cfg();
+    let mut v = req.unwrap_or(0.0);
+    if v <= 0.0 {
+        v = c.default_cpus;
+    }
+    if v > c.max_cpus {
+        v = c.max_cpus;
+    }
+    v
+}
+
+fn clamp_memory(req: Option<i64>) -> i64 {
+    let c = cfg();
+    let mut v = req.unwrap_or(0);
+    if v <= 0 {
+        v = c.default_mem_mb;
+    }
+    if v > c.max_memory_mb {
+        v = c.max_memory_mb;
+    }
+    v
+}
 
 /// Payload accepted by the POST /run endpoint.
 #[derive(Debug, Deserialize, Serialize)]
@@ -74,15 +185,12 @@ pub struct RunResponse {
     pub output_files: HashMap<String, String>,
     /// Unique execution trace ID.
     pub run_id: String,
+    /// True when the container was killed for exceeding the execution timeout.
+    pub timed_out: bool,
 }
 
-/// Launches the Axum web service.
-///
-/// Starts an asynchronous HTTP server on port 8080 or port specified in PORT env var.
-///
-/// # Errors
-/// Returns an error if the server fails to bind or start.
-async fn cors_middleware(request: axum::extract::Request, next: Next) -> Response {
+/// CORS middleware applying permissive headers and short-circuiting preflight.
+async fn cors_middleware(request: Request, next: Next) -> Response {
     let method = request.method().clone();
     if method == Method::OPTIONS {
         let mut response = Response::default();
@@ -101,22 +209,56 @@ async fn cors_middleware(request: axum::extract::Request, next: Next) -> Respons
     response
 }
 
+/// Enforces a bearer token when `SANDBOX_TOKEN` is set. When empty, auth is
+/// skipped (intended for a loopback-only dev bind).
+async fn auth_middleware(request: Request, next: Next) -> Response {
+    let c = cfg();
+    if !c.token.is_empty() && request.method() != Method::OPTIONS {
+        let expected = format!("Bearer {}", c.token);
+        let ok = request
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == expected)
+            .unwrap_or(false);
+        if !ok {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    }
+    next.run(request).await
+}
+
 #[tokio::main]
 pub async fn main() -> Result<()> {
+    let config = load_config();
+    let bind = config.bind.clone();
+    let port = config.port.clone();
+    let max_body = config.max_body_bytes;
+    let max_conc = config.max_concurrency;
+    let has_token = !config.token.is_empty();
+
+    let _ = SEM.set(Semaphore::new(max_conc));
+    CFG.set(config).map_err(|_| anyhow!("config already set"))?;
+
+    if !has_token && bind != "127.0.0.1" && bind != "localhost" {
+        eprintln!("[Rust Worker Service] WARNING: no SANDBOX_TOKEN set while binding to {bind}; /run is unauthenticated.");
+    }
+
     let app = Router::new()
         .route("/", get(handle_index))
         .route("/run", post(handle_run))
         .route("/libraries", get(handle_libraries))
         .route("/tiff.min.js", get(handle_tiff))
+        .layer(axum::middleware::from_fn(auth_middleware))
+        .layer(DefaultBodyLimit::max(max_body))
         .layer(axum::middleware::from_fn(cors_middleware));
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8081".to_string());
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .with_context(|| format!("Failed to bind to {}", addr))?;
+        .with_context(|| format!("Failed to bind to {addr}"))?;
 
-    println!("[Rust Worker Service] Listening on: {}", addr);
+    println!("[Rust Worker Service] Listening on: {addr} (max_concurrency={max_conc})");
     axum::serve(listener, app)
         .await
         .context("Server failed during execution")?;
@@ -125,11 +267,6 @@ pub async fn main() -> Result<()> {
 }
 
 /// HTTP handler that returns a list of pre-installed Python libraries in the sandbox.
-///
-/// Queries the sandbox image for distributions and merges with a built-in Python module list.
-///
-/// # Errors
-/// Returns an internal server error status code if the podman process command fails.
 async fn handle_libraries() -> Result<Json<Vec<String>>, StatusCode> {
     let output = Command::new("podman")
         .args([
@@ -179,11 +316,6 @@ async fn handle_libraries() -> Result<Json<Vec<String>>, StatusCode> {
 }
 
 /// HTTP handler that serves the Monaco code editor web interface.
-///
-/// Reads index.html from multiple search paths and returns its content.
-///
-/// # Errors
-/// Returns an internal server error status code if index.html cannot be located.
 async fn handle_index() -> Result<Html<String>, StatusCode> {
     let paths = ["wfe/index.html", "../wfe/index.html", "../../wfe/index.html", "index.html"];
     for p in &paths {
@@ -213,21 +345,22 @@ async fn handle_tiff() -> Result<(axum::http::HeaderMap, String), StatusCode> {
 }
 
 /// HTTP handler that executes Python code inside the sandbox container.
-///
-/// Extracts parameters, writes temp files, runs Podman asynchronously, and maps outputs.
-///
-/// # Errors
-/// Returns an internal server error status code if sandbox file system operations fail.
 async fn handle_run(Json(payload): Json<RunRequest>) -> Result<Json<RunResponse>, StatusCode> {
-    let network = payload.network.unwrap_or_else(|| "offline".to_string());
+    let network = payload.network.clone().unwrap_or_else(|| "offline".to_string());
     if network != "offline" && network != "isolated" && network != "full" {
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // Bound concurrent executions; reject fast instead of queueing unboundedly.
+    let _permit = match SEM.get().expect("sem initialized").try_acquire() {
+        Ok(p) => p,
+        Err(_) => return Err(StatusCode::TOO_MANY_REQUESTS),
+    };
+
     match execute_sandbox(&payload.code, &network, payload.cpus, payload.memory_mb, payload.input_files.unwrap_or_default()).await {
         Ok(response) => Ok(Json(response)),
         Err(e) => {
-            eprintln!("[Rust Worker] Execution error: {:?}", e);
+            eprintln!("[Rust Worker] Execution error: {e:?}");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -242,14 +375,24 @@ fn generate_run_id() -> String {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            format!("rust-fallback-{}", nanos)
+            format!("rust-fallback-{nanos}")
         })
 }
 
+/// Reads an async stream into memory, but never more than `limit` bytes, so an
+/// infinite print loop in the sandbox cannot exhaust server memory.
+async fn read_capped<R: AsyncRead + Unpin>(reader: R, limit: u64) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = reader.take(limit).read_to_end(&mut buf).await;
+    buf
+}
+
+/// Best-effort force removal of a container by name.
+async fn force_remove(name: &str) {
+    let _ = Command::new("podman").args(["rm", "-f", name]).output().await;
+}
+
 /// Performs filesystem preparation, asynchronous Podman invocation, and result ingestion.
-///
-/// # Errors
-/// Returns an error if any system command, file creation, or file read fails.
 async fn execute_sandbox(
     code: &str,
     network: &str,
@@ -257,34 +400,24 @@ async fn execute_sandbox(
     memory_mb: Option<i64>,
     input_files: HashMap<String, String>,
 ) -> Result<RunResponse> {
+    let c = cfg();
     let run_id = generate_run_id();
-    println!("[Rust Worker] [Request {}] Processing execution request", run_id);
+    println!("[Rust Worker] [Request {run_id}] Processing execution request");
     let temp_dir = std::path::Path::new("/tmp");
 
-    // 1. Establish isolated paths for the execution run
-    let run_dir = temp_dir.join(format!("sandbox-run-rust-{}", run_id));
-    let out_dir = temp_dir.join(format!("sandbox-out-{}", run_id));
-    let in_dir = temp_dir.join(format!("sandbox-in-{}", run_id));
+    let run_dir = temp_dir.join(format!("sandbox-run-rust-{run_id}"));
+    let out_dir = temp_dir.join(format!("sandbox-out-{run_id}"));
+    let in_dir = temp_dir.join(format!("sandbox-in-{run_id}"));
 
-    fs::create_dir_all(&run_dir)
-        .await
-        .context("Failed to create execution run directory")?;
-    fs::create_dir_all(&out_dir)
-        .await
-        .context("Failed to create output directory")?;
-    fs::create_dir_all(&in_dir)
-        .await
-        .context("Failed to create input directory")?;
+    fs::create_dir_all(&run_dir).await.context("Failed to create execution run directory")?;
+    fs::create_dir_all(&out_dir).await.context("Failed to create output directory")?;
+    fs::create_dir_all(&in_dir).await.context("Failed to create input directory")?;
 
-    // We must ensure the output folder is writable by the container's unprivileged UID
     set_directory_writable(&out_dir).await?;
 
     let py_file_path = run_dir.join("run.py");
-    fs::write(&py_file_path, code)
-        .await
-        .context("Failed to write python script to run_dir")?;
+    fs::write(&py_file_path, code).await.context("Failed to write python script to run_dir")?;
 
-    // Decode and write input files
     for (fname, b64_content) in input_files {
         if let Some(safe_name) = Path::new(&fname).file_name() {
             if let Ok(decoded) = BASE64_STANDARD.decode(b64_content.trim()) {
@@ -293,35 +426,38 @@ async fn execute_sandbox(
         }
     }
 
-    // 2. Prepare the rootless Podman execution parameters
     let py_mount = format!("{}:/sandbox/run.py:ro", py_file_path.display());
     let out_mount = format!("{}:/output:rw", out_dir.display());
     let in_mount = format!("{}:/input:ro", in_dir.display());
 
-    println!("[Rust Worker] Spawning container with network={}...", network);
+    let cpus_val = clamp_cpus(cpus);
+    let mem_val = clamp_memory(memory_mb);
+    let container_name = format!("sandbox-rust-{run_id}");
+
+    println!(
+        "[Rust Worker] Spawning container network={network} (cpus={cpus_val} mem={mem_val}MB timeout={}s)...",
+        c.timeout_sec
+    );
     let start_time = std::time::Instant::now();
 
     let mut podman_args = vec![
         "run".to_string(), "--rm".to_string(),
+        "--name".to_string(), container_name.clone(),
         "--cap-add=NET_ADMIN".to_string(),
         "--cap-add=NET_RAW".to_string(),
         "--cap-add=SYS_ADMIN".to_string(),
         "--device".to_string(), "/dev/net/tun".to_string(),
         "--security-opt".to_string(), "label=disable".to_string(),
     ];
-
-    if let Some(c) = cpus {
-        if c > 0.0 {
-            podman_args.push(format!("--cpus={}", c));
-        }
+    if !c.seccomp_profile.is_empty() {
+        podman_args.push("--security-opt".to_string());
+        podman_args.push(format!("seccomp={}", c.seccomp_profile));
     }
-    if let Some(m) = memory_mb {
-        if m > 0 {
-            podman_args.push(format!("--memory={}m", m));
-        }
-    }
-
     podman_args.extend([
+        format!("--cpus={cpus_val}"),
+        format!("--memory={mem_val}m"),
+        format!("--pids-limit={}", c.pids_limit),
+        format!("--timeout={}", c.timeout_sec),
         "-e".to_string(), "NETWORK_MODE=offline".to_string(),
         "-v".to_string(), py_mount,
         "-v".to_string(), out_mount,
@@ -329,18 +465,38 @@ async fn execute_sandbox(
         "run-python-sandbox".to_string(),
     ]);
 
-    let output = Command::new("podman")
+    let mut child = Command::new("podman")
         .args(&podman_args)
-        .output()
-        .await
-        .context("Failed to execute podman container")?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn podman container")?;
+
+    let stdout = child.stdout.take().context("missing stdout pipe")?;
+    let stderr = child.stderr.take().context("missing stderr pipe")?;
+    let out_task = tokio::spawn(read_capped(stdout, c.max_stream_bytes));
+    let err_task = tokio::spawn(read_capped(stderr, c.max_stream_bytes));
+
+    // Backstop deadline in case the podman CLI wedges; podman --timeout should
+    // stop the container first.
+    let deadline = Duration::from_secs(c.timeout_sec + 15);
+    let mut timed_out = false;
+    let exit_code: i32 = match timeout(deadline, child.wait()).await {
+        Ok(Ok(status)) => status.code().unwrap_or(-1),
+        Ok(Err(e)) => return Err(anyhow!("Failed to wait on podman: {e}")),
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            force_remove(&container_name).await;
+            timed_out = true;
+            124
+        }
+    };
 
     let elapsed_ms = start_time.elapsed().as_millis() as i64;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out_task.await.unwrap_or_default()).into_owned();
+    let stderr = String::from_utf8_lossy(&err_task.await.unwrap_or_default()).into_owned();
 
-    // Read and parse internal metrics if generated
     let mut metrics = Metrics {
         wall_time_ms: elapsed_ms,
         max_memory_kb: 0,
@@ -378,31 +534,40 @@ async fn execute_sandbox(
                 metrics.involuntary_context_switches = inner.involuntary_context_switches;
             }
         }
-        // Delete the metrics file from host
         let _ = fs::remove_file(&metrics_path).await;
     }
 
-    // 3. Read output files and convert to base64
+    // Read output files up to a total byte budget. We inspect the directory
+    // entry's own file type (no symlink traversal) so sandboxed code cannot
+    // plant a symlink pointing at arbitrary host files.
     let mut output_files = HashMap::new();
-    let mut dir_entries = fs::read_dir(&out_dir)
-        .await
-        .context("Failed to read output directory contents")?;
-
+    let mut budget: u64 = c.max_output_bytes;
+    let mut dir_entries = fs::read_dir(&out_dir).await.context("Failed to read output directory contents")?;
     while let Some(entry) = dir_entries.next_entry().await? {
+        let file_type = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if !file_type.is_file() {
+            continue;
+        }
         let path = entry.path();
-        if path.is_file() && path.file_name() != Some(std::ffi::OsStr::new("metrics.json")) {
-            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                let content = fs::read(&path)
-                    .await
-                    .with_context(|| format!("Failed to read output file: {}", file_name))?;
-                let encoded = BASE64_STANDARD.encode(content);
-                output_files.insert(file_name.to_string(), encoded);
-            }
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n != "metrics.json" => n.to_string(),
+            _ => continue,
+        };
+        let size = entry.metadata().await.map(|m| m.len()).unwrap_or(u64::MAX);
+        if size > budget {
+            eprintln!("[Rust Worker] Skipping output file {file_name}: exceeds remaining output budget");
+            continue;
+        }
+        if let Ok(content) = fs::read(&path).await {
+            budget = budget.saturating_sub(content.len() as u64);
+            output_files.insert(file_name, BASE64_STANDARD.encode(content));
         }
     }
 
-    // Clean up temporary files asynchronously in background
-    let _cleanup_run = tokio::spawn(async move {
+    let _cleanup = tokio::spawn(async move {
         let _ = fs::remove_dir_all(&run_dir).await;
         let _ = fs::remove_dir_all(&out_dir).await;
         let _ = fs::remove_dir_all(&in_dir).await;
@@ -415,15 +580,12 @@ async fn execute_sandbox(
         metrics,
         output_files,
         run_id,
+        timed_out,
     })
 }
 
-/// Changes the target directory permissions to 777.
-///
-/// This permits the container’s subuid mapped users to write files into it.
-///
-/// # Errors
-/// Returns an error if setting directory permissions fails.
+/// Changes the target directory permissions to 777 so the container's mapped
+/// subuid can write output files into it.
 async fn set_directory_writable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {

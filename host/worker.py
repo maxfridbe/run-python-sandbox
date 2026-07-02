@@ -43,8 +43,42 @@ def main():
         default=0,
         help="Memory limit in megabytes. 0 means unlimited."
     )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=0,
+        help="Maximum container run time in seconds before it is killed. 0 means no timeout."
+    )
+    parser.add_argument(
+        "--pids_limit",
+        type=int,
+        default=256,
+        help="Maximum number of processes/threads inside the container (fork-bomb guard). 0 means unlimited."
+    )
+    parser.add_argument(
+        "--seccomp",
+        default=None,
+        help="Path to a custom seccomp profile passed to podman via --security-opt seccomp=<path>."
+    )
+    parser.add_argument(
+        "--hardened",
+        action="store_true",
+        help="Apply the bundled hardened seccomp profile (seccomp-hardened.json next to this script), "
+             "which denies bpf/perf_event_open/etc. that SYS_ADMIN would otherwise re-enable."
+    )
 
     args = parser.parse_args()
+
+    # Resolve the seccomp profile: explicit --seccomp wins; otherwise --hardened
+    # selects the bundled profile shipped alongside this script.
+    seccomp_path = args.seccomp
+    if seccomp_path is None and args.hardened:
+        seccomp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seccomp-hardened.json")
+    if seccomp_path is not None:
+        seccomp_path = os.path.abspath(seccomp_path)
+        if not os.path.isfile(seccomp_path):
+            print(f"Error: seccomp profile '{seccomp_path}' does not exist.", file=sys.stderr)
+            sys.exit(1)
 
     # 1. Resolve absolute paths
     run_py_path = os.path.abspath(args.run_py)
@@ -85,10 +119,20 @@ def main():
         "--security-opt", "label=disable",
     ]
 
+    if seccomp_path is not None:
+        # Narrows what SYS_ADMIN unlocks (denies bpf, perf_event_open, etc.) while
+        # keeping the mount/namespace syscalls nested rootless podman requires.
+        podman_cmd.extend(["--security-opt", f"seccomp={seccomp_path}"])
+        print(f"[*] Seccomp profile: {seccomp_path}")
+
     if args.cpus > 0.0:
         podman_cmd.append(f"--cpus={args.cpus}")
     if args.memory_mb > 0:
         podman_cmd.append(f"--memory={args.memory_mb}m")
+    if args.pids_limit > 0:
+        podman_cmd.append(f"--pids-limit={args.pids_limit}")
+    if args.timeout > 0:
+        podman_cmd.append(f"--timeout={args.timeout}")
 
     podman_cmd.extend([
         "-e", f"NETWORK_MODE={args.network}",

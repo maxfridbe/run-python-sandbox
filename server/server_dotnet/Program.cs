@@ -1,8 +1,61 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+// Server-enforced safety limits sourced from environment variables. Every
+// request is clamped to these ceilings regardless of client-supplied values.
+static string EnvStr(string key, string def) => Environment.GetEnvironmentVariable(key) is { Length: > 0 } v ? v : def;
+static int EnvInt(string key, int def) => int.TryParse(Environment.GetEnvironmentVariable(key), out var v) ? v : def;
+static double EnvFloat(string key, double def) => double.TryParse(Environment.GetEnvironmentVariable(key), out var v) ? v : def;
+
+var bindAddr = EnvStr("SANDBOX_BIND", "127.0.0.1");
+var port = EnvStr("PORT", "8082");
+var token = EnvStr("SANDBOX_TOKEN", "");
+var timeoutSec = EnvInt("SANDBOX_TIMEOUT_SEC", 60);
+var maxConcurrency = EnvInt("SANDBOX_MAX_CONCURRENCY", 4);
+var maxCpus = EnvFloat("SANDBOX_MAX_CPUS", 2.0);
+var defaultCpus = EnvFloat("SANDBOX_DEFAULT_CPUS", 1.0);
+var maxMemoryMb = (long)EnvInt("SANDBOX_MAX_MEMORY_MB", 2048);
+var defaultMemMb = (long)EnvInt("SANDBOX_DEFAULT_MEMORY_MB", 1024);
+var pidsLimit = EnvInt("SANDBOX_PIDS_LIMIT", 256);
+var maxBodyBytes = (long)EnvInt("SANDBOX_MAX_BODY_MB", 10) * 1024 * 1024;
+var maxStreamChars = EnvInt("SANDBOX_MAX_LOG_MB", 4) * 1024 * 1024;
+var maxOutputBytes = (long)EnvInt("SANDBOX_MAX_OUTPUT_MB", 32) * 1024 * 1024;
+
+// Resolve the seccomp profile to pass to podman, or "" for the default.
+// SANDBOX_SECCOMP (explicit path) wins; otherwise a truthy SANDBOX_HARDENED
+// selects the bundled hardened profile.
+static string ResolveSeccompProfile()
+{
+    var explicitPath = Environment.GetEnvironmentVariable("SANDBOX_SECCOMP");
+    if (!string.IsNullOrEmpty(explicitPath))
+    {
+        return Path.GetFullPath(explicitPath);
+    }
+    var hardened = Environment.GetEnvironmentVariable("SANDBOX_HARDENED");
+    if (hardened is "1" or "true" or "yes")
+    {
+        string[] candidates = { "host/seccomp-hardened.json", "../host/seccomp-hardened.json", "../../host/seccomp-hardened.json", "seccomp-hardened.json" };
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+        }
+        Console.WriteLine("[Dotnet Worker] WARNING: SANDBOX_HARDENED set but seccomp-hardened.json not found; using default seccomp.");
+    }
+    return "";
+}
+var seccompProfile = ResolveSeccompProfile();
+
+var runSemaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+
 var builder = WebApplication.CreateBuilder(args);
+
+// Bound request body size to protect the server from memory exhaustion.
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = maxBodyBytes;
+});
 
 // Enable CORS services
 builder.Services.AddCors(options =>
@@ -27,10 +80,68 @@ var app = builder.Build();
 // Enable CORS middleware
 app.UseCors();
 
-// Configure the port from environment variable PORT (standard behavior)
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8082";
+// Bearer-token auth for /run when SANDBOX_TOKEN is configured.
+app.Use(async (context, next) =>
+{
+    if (!string.IsNullOrEmpty(token)
+        && context.Request.Path == "/run"
+        && !HttpMethods.IsOptions(context.Request.Method))
+    {
+        var auth = context.Request.Headers.Authorization.ToString();
+        if (auth != $"Bearer {token}")
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsync("Unauthorized");
+            return;
+        }
+    }
+    await next();
+});
+
 app.Urls.Clear();
-app.Urls.Add($"http://0.0.0.0:{port}");
+app.Urls.Add($"http://{bindAddr}:{port}");
+
+if (string.IsNullOrEmpty(token) && bindAddr != "127.0.0.1" && bindAddr != "localhost")
+{
+    Console.WriteLine($"[Dotnet Worker] WARNING: no SANDBOX_TOKEN set while binding to {bindAddr}; /run is unauthenticated.");
+}
+
+// Clamp CPU request into (0, maxCpus], substituting the default for non-positive.
+double ClampCpus(double? req)
+{
+    var v = req ?? 0.0;
+    if (v <= 0) v = defaultCpus;
+    if (v > maxCpus) v = maxCpus;
+    return v;
+}
+
+long ClampMemory(long? req)
+{
+    var v = req ?? 0;
+    if (v <= 0) v = defaultMemMb;
+    if (v > maxMemoryMb) v = maxMemoryMb;
+    return v;
+}
+
+// Read a stream up to a character cap, then drain the rest so the child never
+// blocks on a full pipe. Bounds server memory against infinite print loops.
+async Task<string> ReadCappedAsync(StreamReader reader, int maxChars)
+{
+    var sb = new StringBuilder();
+    var buffer = new char[8192];
+    int read;
+    while ((read = await reader.ReadAsync(buffer, 0, buffer.Length)) > 0)
+    {
+        var take = Math.Min(read, maxChars - sb.Length);
+        if (take > 0) sb.Append(buffer, 0, take);
+        if (sb.Length >= maxChars)
+        {
+            while (await reader.ReadAsync(buffer, 0, buffer.Length) > 0) { }
+            break;
+        }
+    }
+    return sb.ToString();
+}
 
 // 1. GET / - Serve index.html
 app.MapGet("/", async (HttpContext context) =>
@@ -128,180 +239,232 @@ app.MapGet("/libraries", async () =>
 // 4. POST /run - Run script inside sandbox
 app.MapPost("/run", async (RunRequest req) =>
 {
-    var runId = Guid.NewGuid().ToString();
-    Console.WriteLine($"[Dotnet Worker] [Request {runId}] Processing execution request");
-    var runDir = Path.Combine("/tmp", $"sandbox-run-dotnet-{runId}");
-    var outDir = Path.Combine("/tmp", $"sandbox-out-{runId}");
-    var inDir = Path.Combine("/tmp", $"sandbox-in-{runId}");
+    // Bound concurrent executions; reject fast instead of queueing unboundedly.
+    if (!await runSemaphore.WaitAsync(0))
+    {
+        return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+    }
 
-    Directory.CreateDirectory(runDir);
-    Directory.CreateDirectory(outDir);
-    Directory.CreateDirectory(inDir);
-
-    // Make output directory writable by sandbox container user (UID 10001)
     try
     {
-        var chmodPsi = new ProcessStartInfo
+        var runId = Guid.NewGuid().ToString();
+        Console.WriteLine($"[Dotnet Worker] [Request {runId}] Processing execution request");
+        var runDir = Path.Combine("/tmp", $"sandbox-run-dotnet-{runId}");
+        var outDir = Path.Combine("/tmp", $"sandbox-out-{runId}");
+        var inDir = Path.Combine("/tmp", $"sandbox-in-{runId}");
+
+        Directory.CreateDirectory(runDir);
+        Directory.CreateDirectory(outDir);
+        Directory.CreateDirectory(inDir);
+
+        // Make output directory writable by sandbox container user (UID 10001)
+        try
         {
-            FileName = "chmod",
-            Arguments = $"777 {outDir}",
+            var chmodPsi = new ProcessStartInfo
+            {
+                FileName = "chmod",
+                Arguments = $"777 {outDir}",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var chmodProcess = Process.Start(chmodPsi);
+            if (chmodProcess != null) await chmodProcess.WaitForExitAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Dotnet Worker] Warning setting permissions on outDir: {ex.Message}");
+        }
+
+        if (req.InputFiles != null)
+        {
+            foreach (var fileKvp in req.InputFiles)
+            {
+                var safeName = Path.GetFileName(fileKvp.Key);
+                try
+                {
+                    var fileBytes = Convert.FromBase64String(fileKvp.Value.Trim());
+                    await File.WriteAllBytesAsync(Path.Combine(inDir, safeName), fileBytes);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Dotnet Worker] Error writing input file {safeName}: {ex.Message}");
+                }
+            }
+        }
+
+        var pyFilePath = Path.Combine(runDir, "run.py");
+        await File.WriteAllTextAsync(pyFilePath, req.Code);
+
+        var cpusVal = ClampCpus(req.Cpus);
+        var memVal = ClampMemory(req.MemoryMb);
+        var containerName = $"sandbox-dotnet-{runId}";
+
+        var argsList = new List<string>
+        {
+            "run", "--rm",
+            "--name", containerName,
+            "--cap-add=NET_ADMIN",
+            "--cap-add=NET_RAW",
+            "--cap-add=SYS_ADMIN",
+            "--device", "/dev/net/tun",
+            "--security-opt", "label=disable",
+            $"--cpus={cpusVal.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            $"--memory={memVal}m",
+            $"--pids-limit={pidsLimit}",
+            $"--timeout={timeoutSec}"
+        };
+
+        if (!string.IsNullOrEmpty(seccompProfile))
+        {
+            argsList.Add("--security-opt");
+            argsList.Add($"seccomp={seccompProfile}");
+        }
+
+        // Force network to offline for compliance
+        argsList.Add("-e");
+        argsList.Add("NETWORK_MODE=offline");
+        argsList.Add("-v");
+        argsList.Add($"{pyFilePath}:/sandbox/run.py:ro");
+        argsList.Add("-v");
+        argsList.Add($"{outDir}:/output:rw");
+        argsList.Add("-v");
+        argsList.Add($"{inDir}:/input:ro");
+        argsList.Add("run-python-sandbox");
+
+        var podmanPsi = new ProcessStartInfo
+        {
+            FileName = "podman",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        using var chmodProcess = Process.Start(chmodPsi);
-        if (chmodProcess != null) await chmodProcess.WaitForExitAsync();
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Dotnet Worker] Warning setting permissions on outDir: {ex.Message}");
-    }
-
-    if (req.InputFiles != null)
-    {
-        foreach (var fileKvp in req.InputFiles)
+        foreach (var arg in argsList)
         {
-            var safeName = Path.GetFileName(fileKvp.Key);
+            podmanPsi.ArgumentList.Add(arg);
+        }
+
+        Console.WriteLine($"[Dotnet Worker] Spawning container (cpus={cpusVal} mem={memVal}MB timeout={timeoutSec}s)...");
+        var stopwatch = Stopwatch.StartNew();
+
+        using var podmanProcess = Process.Start(podmanPsi);
+        if (podmanProcess == null)
+        {
+            return Results.StatusCode(StatusCodes.Status500InternalServerError);
+        }
+
+        var stdoutTask = ReadCappedAsync(podmanProcess.StandardOutput, maxStreamChars);
+        var stderrTask = ReadCappedAsync(podmanProcess.StandardError, maxStreamChars);
+
+        // Backstop deadline in case the podman CLI wedges; podman --timeout should
+        // stop the container first.
+        var timedOut = false;
+        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec + 15)))
+        {
             try
             {
-                var fileBytes = Convert.FromBase64String(fileKvp.Value.Trim());
-                await File.WriteAllBytesAsync(Path.Combine(inDir, safeName), fileBytes);
+                await podmanProcess.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                timedOut = true;
+                try { podmanProcess.Kill(true); } catch { }
+                try
+                {
+                    var rmPsi = new ProcessStartInfo { FileName = "podman", UseShellExecute = false, CreateNoWindow = true };
+                    rmPsi.ArgumentList.Add("rm");
+                    rmPsi.ArgumentList.Add("-f");
+                    rmPsi.ArgumentList.Add(containerName);
+                    using var rm = Process.Start(rmPsi);
+                    if (rm != null) await rm.WaitForExitAsync();
+                }
+                catch { }
+            }
+        }
+        stopwatch.Stop();
+
+        var elapsedMs = stopwatch.ElapsedMilliseconds;
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+        var exitCode = timedOut ? 124 : podmanProcess.ExitCode;
+
+        // Read and parse internal metrics if generated
+        long maxMemory = 0;
+        string cpuPct = "0%";
+        double userTime = 0.0;
+        double sysTime = 0.0;
+        long fsIn = 0;
+        long fsOut = 0;
+        long volCs = 0;
+        long involCs = 0;
+
+        var metricsPath = Path.Combine(outDir, "metrics.json");
+        if (File.Exists(metricsPath))
+        {
+            try
+            {
+                var content = await File.ReadAllTextAsync(metricsPath);
+                var inner = JsonSerializer.Deserialize<InnerMetrics>(content);
+                if (inner != null)
+                {
+                    maxMemory = inner.MaxMemoryKb;
+                    cpuPct = inner.CpuPercentage;
+                    userTime = inner.UserTimeSec;
+                    sysTime = inner.SysTimeSec;
+                    fsIn = inner.FsInputs;
+                    fsOut = inner.FsOutputs;
+                    volCs = inner.VoluntaryContextSwitches;
+                    involCs = inner.InvoluntaryContextSwitches;
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Dotnet Worker] Error writing input file {safeName}: {ex.Message}");
+                Console.WriteLine($"[Dotnet Worker] Error reading metrics: {ex.Message}");
             }
+            try { File.Delete(metricsPath); } catch { }
         }
-    }
 
-    var pyFilePath = Path.Combine(runDir, "run.py");
-    await File.WriteAllTextAsync(pyFilePath, req.Code);
+        var metrics = new Metrics(elapsedMs, maxMemory, cpuPct, userTime, sysTime, fsIn, fsOut, volCs, involCs);
 
-    var argsList = new List<string>
-    {
-        "run", "--rm",
-        "--cap-add=NET_ADMIN",
-        "--cap-add=NET_RAW",
-        "--cap-add=SYS_ADMIN",
-        "--device", "/dev/net/tun",
-        "--security-opt", "label=disable"
-    };
-
-    if (req.Cpus > 0)
-    {
-        argsList.Add($"--cpus={req.Cpus}");
-    }
-    if (req.MemoryMb > 0)
-    {
-        argsList.Add($"--memory={req.MemoryMb}m");
-    }
-
-    // Force network to offline for compliance
-    argsList.Add("-e");
-    argsList.Add("NETWORK_MODE=offline");
-    argsList.Add("-v");
-    argsList.Add($"{pyFilePath}:/sandbox/run.py:ro");
-    argsList.Add("-v");
-    argsList.Add($"{outDir}:/output:rw");
-    argsList.Add("-v");
-    argsList.Add($"{inDir}:/input:ro");
-    argsList.Add("run-python-sandbox");
-
-    var podmanPsi = new ProcessStartInfo
-    {
-        FileName = "podman",
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        UseShellExecute = false,
-        CreateNoWindow = true
-    };
-    foreach (var arg in argsList)
-    {
-        podmanPsi.ArgumentList.Add(arg);
-    }
-
-    Console.WriteLine($"[Dotnet Worker] Spawning container with network=offline...");
-    var stopwatch = Stopwatch.StartNew();
-    
-    using var podmanProcess = Process.Start(podmanPsi);
-    if (podmanProcess == null)
-    {
-        return Results.StatusCode(StatusCodes.Status500InternalServerError);
-    }
-
-    var stdoutTask = podmanProcess.StandardOutput.ReadToEndAsync();
-    var stderrTask = podmanProcess.StandardError.ReadToEndAsync();
-
-    await podmanProcess.WaitForExitAsync();
-    stopwatch.Stop();
-
-    var elapsedMs = stopwatch.ElapsedMilliseconds;
-    var stdout = await stdoutTask;
-    var stderr = await stderrTask;
-    var exitCode = podmanProcess.ExitCode;
-
-    // Read and parse internal metrics if generated
-    long maxMemory = 0;
-    string cpuPct = "0%";
-    double userTime = 0.0;
-    double sysTime = 0.0;
-    long fsIn = 0;
-    long fsOut = 0;
-    long volCs = 0;
-    long involCs = 0;
-
-    var metricsPath = Path.Combine(outDir, "metrics.json");
-    if (File.Exists(metricsPath))
-    {
+        // Read output files up to a total byte budget, skipping symlinks so
+        // sandboxed code cannot point us at arbitrary host files.
+        var outputFiles = new Dictionary<string, string>();
+        long outputBudget = maxOutputBytes;
         try
         {
-            var content = await File.ReadAllTextAsync(metricsPath);
-            var inner = JsonSerializer.Deserialize<InnerMetrics>(content);
-            if (inner != null)
+            foreach (var file in Directory.GetFiles(outDir))
             {
-                maxMemory = inner.MaxMemoryKb;
-                cpuPct = inner.CpuPercentage;
-                userTime = inner.UserTimeSec;
-                sysTime = inner.SysTimeSec;
-                fsIn = inner.FsInputs;
-                fsOut = inner.FsOutputs;
-                volCs = inner.VoluntaryContextSwitches;
-                involCs = inner.InvoluntaryContextSwitches;
+                var name = Path.GetFileName(file);
+                if (name == "metrics.json") continue;
+                var fi = new FileInfo(file);
+                if ((fi.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                if (fi.Length > outputBudget)
+                {
+                    Console.WriteLine($"[Dotnet Worker] Skipping output file {name}: exceeds remaining output budget");
+                    continue;
+                }
+                var fileBytes = await File.ReadAllBytesAsync(file);
+                outputBudget -= fileBytes.Length;
+                outputFiles[name] = Convert.ToBase64String(fileBytes);
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Dotnet Worker] Error reading metrics: {ex.Message}");
+            Console.WriteLine($"[Dotnet Worker] Error reading output files: {ex.Message}");
         }
-        try { File.Delete(metricsPath); } catch {}
+
+        // Clean up temporary run directories
+        try { Directory.Delete(runDir, true); } catch { }
+        try { Directory.Delete(outDir, true); } catch { }
+        try { Directory.Delete(inDir, true); } catch { }
+
+        var response = new RunResponse(stdout, stderr, exitCode, metrics, outputFiles, runId, timedOut);
+        return Results.Ok(response);
     }
-
-    var metrics = new Metrics(elapsedMs, maxMemory, cpuPct, userTime, sysTime, fsIn, fsOut, volCs, involCs);
-
-    // Read output files and convert to base64
-    var outputFiles = new Dictionary<string, string>();
-    try
+    finally
     {
-        foreach (var file in Directory.GetFiles(outDir))
-        {
-            var name = Path.GetFileName(file);
-            if (name == "metrics.json") continue;
-            var fileBytes = await File.ReadAllBytesAsync(file);
-            var base64 = Convert.ToBase64String(fileBytes);
-            outputFiles[name] = base64;
-        }
+        runSemaphore.Release();
     }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Dotnet Worker] Error reading output files: {ex.Message}");
-    }
-
-    // Clean up temporary run directories
-    try { Directory.Delete(runDir, true); } catch {}
-    try { Directory.Delete(outDir, true); } catch {}
-    try { Directory.Delete(inDir, true); } catch {}
-
-    var response = new RunResponse(stdout, stderr, exitCode, metrics, outputFiles, runId);
-    return Results.Ok(response);
 });
 
 app.Run();
@@ -311,13 +474,13 @@ public class InnerMetrics
 {
     [JsonPropertyName("max_memory_kb")]
     public long MaxMemoryKb { get; set; }
-    
+
     [JsonPropertyName("cpu_percentage")]
     public string CpuPercentage { get; set; } = "0%";
-    
+
     [JsonPropertyName("user_time_sec")]
     public double UserTimeSec { get; set; }
-    
+
     [JsonPropertyName("sys_time_sec")]
     public double SysTimeSec { get; set; }
 
@@ -359,5 +522,6 @@ public record RunResponse(
     int ExitCode,
     Metrics Metrics,
     Dictionary<string, string> OutputFiles,
-    string RunId
+    string RunId,
+    bool TimedOut
 );
